@@ -44,5 +44,4 @@ npm run deploy:localhost
 npm run dev
 ```
 
-浏览器打开 lite-server 输出的地址，使用 MetaMask 连接 `http://127.0.0.1:8545` 本地网络，并导入 Hardhat 控制台输出的测试账户私钥即可演示。
-
+浏览器打开 `npm run dev` 输出的本地地址，使用 MetaMask 连接 `http://127.0.0.1:8545` 本地网络，并导入 Hardhat 控制台输出的测试账户私钥即可演示。
