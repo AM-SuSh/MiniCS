@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>链上众筹系统</title>
+    <link rel="stylesheet" href="./css/styles.css">
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="workspace">
+        <aside class="sidebar" aria-label="控制面板">
+          <div class="brand-block">
+            <div class="brand-mark" aria-hidden="true">CF</div>
+            <div>
+              <h1>链上众筹系统</h1>
+              <p>Hardhat + Solidity + ethers</p>
+            </div>
+          </div>
+
+          <div class="wallet-card">
+            <span class="status-dot" id="networkDot"></span>
+            <div>
+              <p class="label">钱包账户</p>
+              <p class="mono" id="walletAddress">未连接</p>
+            </div>
+            <button id="connectWalletBtn" type="button">连接钱包</button>
+          </div>
+
+          <form id="createProjectForm" class="form-panel">
+            <h2>创建项目</h2>
+            <label>
+              项目名称
+              <input name="name" type="text" maxlength="80" required placeholder="校园公益影像计划">
+            </label>
+            <label>
+              项目描述
+              <textarea name="description" rows="4" required placeholder="说明项目用途、资金计划和预期成果"></textarea>
+            </label>
+            <div class="two-col">
+              <label>
+                目标金额 ETH
+                <input name="goal" type="number" min="0.0001" step="0.0001" required placeholder="5">
+              </label>
+              <label>
+                截止时间
+                <input name="deadline" type="datetime-local" required>
+              </label>
+            </div>
+            <button type="submit">创建众筹项目</button>
+          </form>
+        </aside>
+
+        <section class="content" aria-label="项目列表">
+          <header class="content-header">
+            <div>
+              <p class="eyebrow">Crowdfunding Dashboard</p>
+              <h2>项目看板</h2>
+            </div>
+            <div class="toolbar">
+              <button class="filter-btn active" type="button" data-filter="all">全部</button>
+              <button class="filter-btn" type="button" data-filter="active">进行中</button>
+              <button class="filter-btn" type="button" data-filter="ended">已结束</button>
+              <button id="refreshBtn" type="button">刷新</button>
+            </div>
+          </header>
+
+          <div class="summary-grid">
+            <div>
+              <span>项目数</span>
+              <strong id="summaryProjects">0</strong>
+            </div>
+            <div>
+              <span>进行中</span>
+              <strong id="summaryActive">0</strong>
+            </div>
+            <div>
+              <span>已筹 ETH</span>
+              <strong id="summaryPledged">0</strong>
+            </div>
+          </div>
+
+          <div id="notice" class="notice" hidden></div>
+          <div id="projectList" class="project-list"></div>
+        </section>
+      </section>
+    </main>
+
+    <template id="projectTemplate">
+      <article class="project-card">
+        <div class="project-topline">
+          <span class="project-id"></span>
+          <span class="project-status"></span>
+        </div>
+        <h3 class="project-title"></h3>
+        <p class="project-description"></p>
+
+        <div class="progress-row">
+          <div>
+            <span class="muted">已筹 / 目标</span>
+            <strong><span class="project-pledged"></span> / <span class="project-goal"></span> ETH</strong>
+          </div>
+          <span class="project-percent"></span>
+        </div>
+        <div class="progress-bar" aria-hidden="true"><span></span></div>
+
+        <dl class="project-meta">
+          <div>
+            <dt>剩余时间</dt>
+            <dd class="project-time"></dd>
+          </div>
+          <div>
+            <dt>发起人</dt>
+            <dd class="project-creator mono"></dd>
+          </div>
+          <div>
+            <dt>捐赠者</dt>
+            <dd class="project-donors"></dd>
+          </div>
+          <div>
+            <dt>早鸟支持者</dt>
+            <dd class="project-early"></dd>
+          </div>
+        </dl>
+
+        <form class="donate-form">
+          <label>
+            捐赠金额 ETH
+            <input name="amount" type="number" min="0.0001" step="0.0001" required placeholder="0.5">
+          </label>
+          <button type="submit">捐赠</button>
+        </form>
+
+        <div class="action-row">
+          <button class="finalize-btn" type="button">结束项目</button>
+          <button class="milestone-btn" type="button">释放 30%</button>
+          <button class="withdraw-btn" type="button">发起人提现</button>
+          <button class="refund-btn" type="button">申请退款</button>
+        </div>
+      </article>
+    </template>
+
+    <script type="module" src="./js/dapp.js"></script>
+  </body>
+</html>
+

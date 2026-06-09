@@ -1,0 +1,19 @@
+{
+  "name": "crowdfunding-hardhat",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A Hardhat-based blockchain crowdfunding dApp for the final project.",
+  "scripts": {
+    "compile": "hardhat compile",
+    "test": "hardhat test",
+    "node": "hardhat node",
+    "deploy:localhost": "hardhat run scripts/deploy.js --network localhost",
+    "dev": "lite-server"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^5.0.0",
+    "hardhat": "^2.22.19",
+    "lite-server": "^2.6.1"
+  }
+}
+
