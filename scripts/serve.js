@@ -6,6 +6,7 @@ const { pathToFileURL } = require("url");
 const rootDir = path.resolve(__dirname, "..", "src");
 const port = Number(process.env.PORT || 3000);
 const host = process.env.HOST || "127.0.0.1";
+const rpcTarget = process.env.RPC_URL || "http://127.0.0.1:8545";
 const checkOnly = process.argv.includes("--check");
 
 const mimeTypes = new Map([
@@ -56,9 +57,49 @@ function resolveRequestPath(requestUrl) {
   return filePath;
 }
 
+function proxyRpc(request, response) {
+  const chunks = [];
+
+  request.on("data", (chunk) => {
+    chunks.push(chunk);
+  });
+
+  request.on("end", async () => {
+    try {
+      const body = Buffer.concat(chunks).toString("utf8");
+      const upstream = await fetch(rpcTarget, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body
+      });
+      const text = await upstream.text();
+
+      response.writeHead(upstream.status, {
+        "Content-Type": "application/json; charset=utf-8",
+        "Cache-Control": "no-store"
+      });
+      response.end(text);
+    } catch (error) {
+      send(response, 502, JSON.stringify({ error: error.message }));
+    }
+  });
+}
+
 const server = http.createServer((request, response) => {
+  const url = new URL(request.url, `http://${host}:${port}`);
+
+  if (url.pathname === "/rpc") {
+    if (request.method !== "POST") {
+      send(response, 405, "Method Not Allowed", { Allow: "POST" });
+      return;
+    }
+
+    proxyRpc(request, response);
+    return;
+  }
+
   if (request.method !== "GET" && request.method !== "HEAD") {
-    send(response, 405, "Method Not Allowed", { Allow: "GET, HEAD" });
+    send(response, 405, "Method Not Allowed", { Allow: "GET, HEAD, POST" });
     return;
   }
 

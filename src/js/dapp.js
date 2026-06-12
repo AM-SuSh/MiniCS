@@ -1,25 +1,45 @@
 import { ethers } from "./ethers.min.js";
 import { contractAbi, contractAddress } from "./contract-config.js";
 
+// Hardhat 本地节点默认地址，已开启 CORS，无需经前端 /rpc 代理
+const RPC_URL = "http://127.0.0.1:8545";
+const LOAD_TIMEOUT_MS = 20000;
+
 const state = {
   provider: null,
   signer: null,
   contract: null,
+  readProvider: null,
+  readContract: null,
   account: "",
   filter: "all",
-  projects: []
+  projects: [],
+  loadProjectsPromise: null,
+  selectedProjectId: null
 };
 
 const els = {
   connectWalletBtn: document.getElementById("connectWalletBtn"),
+  createModal: document.getElementById("createModal"),
   createProjectForm: document.getElementById("createProjectForm"),
+  toggleCreateBtn: document.getElementById("toggleCreateBtn"),
+  closeCreateBtn: document.getElementById("closeCreateBtn"),
+  cancelCreateBtn: document.getElementById("cancelCreateBtn"),
+  createModalBackdrop: document.getElementById("createModalBackdrop"),
   projectList: document.getElementById("projectList"),
-  projectTemplate: document.getElementById("projectTemplate"),
+  projectListView: document.getElementById("projectListView"),
+  projectCompactTemplate: document.getElementById("projectCompactTemplate"),
+  projectDetailTemplate: document.getElementById("projectDetailTemplate"),
+  projectDetailView: document.getElementById("projectDetailView"),
+  projectDetailBody: document.getElementById("projectDetailBody"),
+  closeDetailBtn: document.getElementById("closeDetailBtn"),
+  statsStrip: document.getElementById("statsStrip"),
+  projectsSection: document.querySelector(".projects-section"),
   walletAddress: document.getElementById("walletAddress"),
   networkDot: document.getElementById("networkDot"),
   notice: document.getElementById("notice"),
   refreshBtn: document.getElementById("refreshBtn"),
-  filterBtns: document.querySelectorAll(".filter-btn"),
+  statFilterBtns: document.querySelectorAll(".stat-card--filterable"),
   summaryProjects: document.getElementById("summaryProjects"),
   summaryActive: document.getElementById("summaryActive"),
   summaryEnded: document.getElementById("summaryEnded"),
@@ -64,18 +84,77 @@ function requireConnected() {
 function setButtonBusy(button, busy, label = "处理中...") {
   if (!button) return;
 
+  const isIconBtn = button.classList.contains("icon-btn");
+
   if (busy) {
-    button.dataset.defaultLabel = button.textContent;
-    button.textContent = label;
+    if (!button.classList.contains("is-loading")) {
+      if (isIconBtn) {
+        button.dataset.defaultLabel = button.getAttribute("aria-label") || "";
+      } else {
+        button.dataset.defaultLabel = button.textContent;
+      }
+    }
+    if (isIconBtn) {
+      button.setAttribute("aria-label", label);
+    } else {
+      button.textContent = label;
+    }
     button.classList.add("is-loading");
     button.disabled = true;
     return;
   }
 
-  button.textContent = button.dataset.defaultLabel || button.textContent;
-  delete button.dataset.defaultLabel;
+  if (isIconBtn) {
+    if (button.dataset.defaultLabel !== undefined) {
+      button.setAttribute("aria-label", button.dataset.defaultLabel);
+      delete button.dataset.defaultLabel;
+    }
+  } else if (button.dataset.defaultLabel) {
+    button.textContent = button.dataset.defaultLabel;
+    delete button.dataset.defaultLabel;
+  }
   button.classList.remove("is-loading");
   button.disabled = false;
+}
+
+function withTimeout(promise, message) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      setTimeout(() => reject(new Error(message)), LOAD_TIMEOUT_MS);
+    })
+  ]);
+}
+
+function formatLoadError(error) {
+  const message = error?.shortMessage || error?.reason || error?.message || String(error);
+  if (message.includes("could not decode result data") || error?.code === "BAD_DATA") {
+    return "链上找不到众筹合约，本地区块链可能已重启。请在新终端运行 npm run deploy:localhost 重新部署。";
+  }
+  return message;
+}
+
+async function getReadProvider() {
+  if (!state.readProvider) {
+    state.readProvider = new ethers.JsonRpcProvider(RPC_URL);
+  }
+  return state.readProvider;
+}
+
+async function ensureContractDeployed() {
+  const provider = await getReadProvider();
+  const code = await provider.getCode(contractAddress);
+  if (!code || code === "0x") {
+    throw new Error("链上找不到众筹合约，本地区块链可能已重启。请在新终端运行 npm run deploy:localhost 重新部署。");
+  }
+}
+
+function getReadContract() {
+  requireContractConfig();
+  if (!state.readContract) {
+    state.readContract = new ethers.Contract(contractAddress, contractAbi, state.readProvider);
+  }
+  return state.readContract;
 }
 
 function renderSkeleton() {
@@ -103,7 +182,7 @@ async function connectWallet() {
   els.networkDot.classList.add("connected");
 }
 
-function parseProject(raw, contributors, earlyDonors) {
+function parseProject(raw, contributors, earlyDonors, myContribution = 0n) {
   const now = Math.floor(Date.now() / 1000);
   const deadline = Number(raw.deadline);
   const pledged = raw.pledged;
@@ -136,6 +215,7 @@ function parseProject(raw, contributors, earlyDonors) {
     donorCount: Number(raw.donorCount),
     contributors,
     earlyDonors,
+    myContribution,
     percent,
     status,
     statusType,
@@ -144,30 +224,50 @@ function parseProject(raw, contributors, earlyDonors) {
 }
 
 async function loadProjects() {
-  if (!state.contract) return;
-
-  renderSkeleton();
-
-  try {
-    const count = Number(await state.contract.projectCount());
-    const projects = [];
-
-    for (let id = 0; id < count; id += 1) {
-      const [raw, contributors, earlyDonors] = await Promise.all([
-        state.contract.getProject(id),
-        state.contract.getContributors(id),
-        state.contract.getEarlyDonors(id)
-      ]);
-      projects.push(parseProject(raw, contributors, earlyDonors));
-    }
-
-    state.projects = projects;
-    renderProjects();
-  } catch (error) {
-    showNotice(error.shortMessage || error.reason || error.message, "error");
-  } finally {
-    els.projectList.removeAttribute("aria-busy");
+  if (state.loadProjectsPromise) {
+    return state.loadProjectsPromise;
   }
+
+  state.loadProjectsPromise = (async () => {
+    renderSkeleton();
+
+    try {
+      requireContractConfig();
+      await ensureContractDeployed();
+      await getReadProvider();
+      const contract = getReadContract();
+      const count = Number(await withTimeout(contract.projectCount(), "读取项目数量超时，请确认本地区块链已启动。"));
+      const account = state.account;
+      const projects = await withTimeout(
+        Promise.all(
+          Array.from({ length: count }, (_, id) =>
+            Promise.all([
+              contract.getProject(id),
+              contract.getContributors(id),
+              contract.getEarlyDonors(id),
+              account ? contract.getContribution(id, account) : Promise.resolve(0n)
+            ]).then(([raw, contributors, earlyDonors, myContribution]) =>
+              parseProject(raw, contributors, earlyDonors, myContribution)
+            )
+          )
+        ),
+        "读取项目详情超时，请稍后重试。"
+      );
+
+      state.projects = projects;
+      renderProjects();
+      return true;
+    } catch (error) {
+      showNotice(formatLoadError(error), "error");
+      renderProjects();
+      return false;
+    } finally {
+      els.projectList.removeAttribute("aria-busy");
+      state.loadProjectsPromise = null;
+    }
+  })();
+
+  return state.loadProjectsPromise;
 }
 
 function renderSummary(projects) {
@@ -202,12 +302,186 @@ function matchesFilter(project) {
   return true;
 }
 
+function updateFilterCards() {
+  for (const button of els.statFilterBtns) {
+    const selected = button.dataset.filter === state.filter;
+    button.classList.toggle("stat-card--selected", selected);
+    button.setAttribute("aria-pressed", selected ? "true" : "false");
+  }
+}
+
+function setProjectFilter(filter) {
+  state.filter = filter;
+  updateFilterCards();
+  if (state.selectedProjectId !== null) {
+    closeProjectDetail();
+  }
+  renderProjects();
+}
+
+function isProjectCreator(project) {
+  return Boolean(state.account) && state.account.toLowerCase() === project.creator.toLowerCase();
+}
+
+function getProjectActions(project) {
+  const now = Math.floor(Date.now() / 1000);
+  const isCreator = isProjectCreator(project);
+  const ended = project.deadline <= now;
+
+  const canFinalize = !project.finalized && ended;
+  const canMilestone =
+    isCreator && !project.finalized && !project.milestoneReleased && project.pledged >= project.goal;
+  const canWithdraw = isCreator && project.finalized && project.successful && !project.withdrawn;
+  const canRefund =
+    !project.successful && project.myContribution > 0n && (project.finalized || ended);
+
+  let finalizeReason = "";
+  if (project.finalized) finalizeReason = "项目已结算";
+  else if (!ended) finalizeReason = "尚未到截止时间";
+
+  let milestoneReason = "";
+  if (!state.account) milestoneReason = "请先连接钱包";
+  else if (!isCreator) milestoneReason = "仅项目发起人可操作";
+  else if (project.finalized) milestoneReason = "项目已结算";
+  else if (project.milestoneReleased) milestoneReason = "阶段资金已释放";
+  else if (project.pledged < project.goal) milestoneReason = "尚未达到筹款目标";
+
+  let withdrawReason = "";
+  if (!state.account) withdrawReason = "请先连接钱包";
+  else if (!isCreator) withdrawReason = "仅项目发起人可操作";
+  else if (!project.finalized) withdrawReason = "项目尚未结算";
+  else if (!project.successful) withdrawReason = "项目未达标";
+  else if (project.withdrawn) withdrawReason = "筹款已提现";
+
+  let refundReason = "";
+  if (!state.account) refundReason = "请先连接钱包";
+  else if (project.myContribution === 0n) refundReason = "您尚未捐赠此项目";
+  else if (project.successful) refundReason = "项目已成功，无法退款";
+  else if (!project.finalized && !ended) refundReason = "项目仍在进行中";
+
+  return {
+    canDonate: !project.finalized && project.deadline > now,
+    finalize: { available: canFinalize, reason: finalizeReason },
+    milestone: { available: canMilestone, reason: milestoneReason },
+    withdraw: { available: canWithdraw, reason: withdrawReason },
+    refund: { available: canRefund, reason: refundReason }
+  };
+}
+
+function applyActionButton(button, action) {
+  button.hidden = false;
+  button.classList.toggle("action-btn--off", !action.available);
+  button.dataset.available = action.available ? "true" : "false";
+  button.title = action.available ? "" : action.reason;
+}
+
+function setStatusBadge(statusEl, project) {
+  statusEl.textContent = project.status;
+  statusEl.classList.toggle("active", project.statusType === "active");
+  statusEl.classList.toggle("success", project.statusType === "success");
+  statusEl.classList.toggle("failed", project.statusType === "failed");
+}
+
+function populateCompactCard(card, project) {
+  const progress = card.querySelector(".progress-bar span");
+  const status = card.querySelector(".project-status");
+
+  card.dataset.projectId = project.id;
+  card.classList.remove("status-active", "status-success", "status-failed");
+  card.classList.add(`status-${project.statusType}`);
+  card.querySelector(".project-id").textContent = `#${project.id}`;
+  card.querySelector(".project-title").textContent = project.name;
+  card.querySelector(".project-description").textContent = project.description;
+  card.querySelector(".project-pledged").textContent = formatEth(project.pledged);
+  card.querySelector(".project-goal").textContent = formatEth(project.goal);
+  card.querySelector(".project-percent").textContent = `${Math.min(project.percent, 999).toFixed(1)}%`;
+  card.querySelector(".project-time").textContent = getTimeLabel(project.deadline, project.finalized);
+  setStatusBadge(status, project);
+  progress.style.width = `${Math.min(project.percent, 100)}%`;
+}
+
+function populateDetailCard(card, project) {
+  const progress = card.querySelector(".progress-bar span");
+  const status = card.querySelector(".project-status");
+
+  card.dataset.projectId = project.id;
+  card.classList.remove("status-active", "status-success", "status-failed");
+  card.classList.add(`status-${project.statusType}`);
+  card.querySelector(".project-id").textContent = `#${project.id}`;
+  card.querySelector(".project-title").textContent = project.name;
+  card.querySelector(".project-description").textContent = project.description;
+  card.querySelector(".project-pledged").textContent = formatEth(project.pledged);
+  card.querySelector(".project-goal").textContent = formatEth(project.goal);
+  card.querySelector(".project-percent").textContent = `${Math.min(project.percent, 999).toFixed(1)}%`;
+  card.querySelector(".project-time").textContent = getTimeLabel(project.deadline, project.finalized);
+  card.querySelector(".project-creator").textContent = shortAddress(project.creator);
+  card.querySelector(".project-creator").title = project.creator;
+  card.querySelector(".project-donors").textContent =
+    project.contributors.map(shortAddress).join(", ") || "暂无";
+  card.querySelector(".project-early").textContent =
+    project.earlyDonors.map(shortAddress).join(", ") || "暂无";
+  setStatusBadge(status, project);
+  progress.style.width = `${Math.min(project.percent, 100)}%`;
+
+  const actions = getProjectActions(project);
+  const donateForm = card.querySelector(".donate-form");
+  donateForm.hidden = !actions.canDonate;
+  card.querySelector(".donate-form button").disabled = !actions.canDonate;
+  applyActionButton(card.querySelector(".finalize-btn"), actions.finalize);
+  applyActionButton(card.querySelector(".milestone-btn"), actions.milestone);
+  applyActionButton(card.querySelector(".withdraw-btn"), actions.withdraw);
+  applyActionButton(card.querySelector(".refund-btn"), actions.refund);
+}
+
+function openProjectDetail(projectId) {
+  const project = state.projects.find((item) => item.id === projectId);
+  if (!project) return;
+
+  state.selectedProjectId = projectId;
+  els.projectDetailBody.innerHTML = "";
+  const fragment = els.projectDetailTemplate.content.cloneNode(true);
+  const card = fragment.querySelector(".project-card");
+  card.classList.add("project-card--detail");
+  populateDetailCard(card, project);
+  els.projectDetailBody.appendChild(fragment);
+
+  els.projectListView.hidden = true;
+  els.statsStrip.hidden = true;
+  els.projectDetailView.hidden = false;
+  document.body.classList.add("detail-open");
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+function closeProjectDetail() {
+  state.selectedProjectId = null;
+  els.projectListView.hidden = false;
+  els.statsStrip.hidden = false;
+  els.projectDetailView.hidden = true;
+  els.projectDetailBody.innerHTML = "";
+  document.body.classList.remove("detail-open");
+}
+
+function renderProjectDetail() {
+  if (state.selectedProjectId === null) return;
+
+  const project = state.projects.find((item) => item.id === state.selectedProjectId);
+  if (!project || !matchesFilter(project)) {
+    closeProjectDetail();
+    return;
+  }
+
+  openProjectDetail(project.id);
+}
+
 function renderProjects() {
   renderSummary(state.projects);
   els.projectList.innerHTML = "";
 
   const projects = state.projects.filter(matchesFilter);
   if (projects.length === 0) {
+    if (state.selectedProjectId !== null) {
+      closeProjectDetail();
+    }
     const empty = document.createElement("div");
     empty.className = "empty-state";
     empty.textContent = "暂无符合条件的众筹项目";
@@ -216,49 +490,35 @@ function renderProjects() {
   }
 
   for (const project of projects) {
-    const fragment = els.projectTemplate.content.cloneNode(true);
+    const fragment = els.projectCompactTemplate.content.cloneNode(true);
     const card = fragment.querySelector(".project-card");
-    const progress = fragment.querySelector(".progress-bar span");
-    const status = fragment.querySelector(".project-status");
-
-    card.dataset.projectId = project.id;
-    card.classList.add(`status-${project.statusType}`);
-    fragment.querySelector(".project-id").textContent = `#${project.id}`;
-    fragment.querySelector(".project-title").textContent = project.name;
-    fragment.querySelector(".project-description").textContent = project.description;
-    fragment.querySelector(".project-pledged").textContent = formatEth(project.pledged);
-    fragment.querySelector(".project-goal").textContent = formatEth(project.goal);
-    fragment.querySelector(".project-percent").textContent = `${Math.min(project.percent, 999).toFixed(1)}%`;
-    fragment.querySelector(".project-time").textContent = getTimeLabel(project.deadline, project.finalized);
-    fragment.querySelector(".project-creator").textContent = shortAddress(project.creator);
-    fragment.querySelector(".project-creator").title = project.creator;
-    fragment.querySelector(".project-donors").textContent =
-      project.contributors.map(shortAddress).join(", ") || "暂无";
-    fragment.querySelector(".project-early").textContent =
-      project.earlyDonors.map(shortAddress).join(", ") || "暂无";
-
-    status.textContent = project.status;
-    status.classList.toggle("active", project.statusType === "active");
-    status.classList.toggle("success", project.statusType === "success");
-    status.classList.toggle("failed", project.statusType === "failed");
-    progress.style.width = `${Math.min(project.percent, 100)}%`;
-
-    const isCreator = state.account.toLowerCase() === project.creator.toLowerCase();
-    const now = Math.floor(Date.now() / 1000);
-    const canDonate = !project.finalized && project.deadline > now;
-    const canFinalize = !project.finalized && project.deadline <= now;
-    const canRelease = isCreator && !project.finalized && !project.milestoneReleased && project.pledged >= project.goal;
-    const canWithdraw = isCreator && project.finalized && project.successful && !project.withdrawn;
-    const canRefund = project.finalized && !project.successful;
-
-    fragment.querySelector(".donate-form button").disabled = !canDonate;
-    fragment.querySelector(".finalize-btn").disabled = !canFinalize;
-    fragment.querySelector(".milestone-btn").disabled = !canRelease;
-    fragment.querySelector(".withdraw-btn").disabled = !canWithdraw;
-    fragment.querySelector(".refund-btn").disabled = !canRefund;
-
+    populateCompactCard(card, project);
     els.projectList.appendChild(fragment);
   }
+
+  renderProjectDetail();
+}
+
+function handleBoardClick(event) {
+  const compactCard = event.target.closest(".project-card--compact");
+  if (compactCard) {
+    openProjectDetail(Number(compactCard.dataset.projectId));
+    return;
+  }
+
+  void handleProjectClick(event).catch((error) => {
+    showNotice(error.shortMessage || error.reason || error.message, "error");
+  });
+}
+
+function handleBoardKeydown(event) {
+  if (event.key !== "Enter" && event.key !== " ") return;
+
+  const compactCard = event.target.closest(".project-card--compact");
+  if (!compactCard) return;
+
+  event.preventDefault();
+  openProjectDetail(Number(compactCard.dataset.projectId));
 }
 
 async function runTransaction(action, successMessage, trigger) {
@@ -266,9 +526,9 @@ async function runTransaction(action, successMessage, trigger) {
     requireConnected();
     clearNotice();
     setButtonBusy(trigger, true);
-    const tx = await action();
+    const tx = await withTimeout(action(), "交易提交超时，请检查 MetaMask 是否已弹出并确认。");
     showNotice("交易已提交，等待区块确认...");
-    await tx.wait();
+    await withTimeout(tx.wait(), "交易确认超时，请稍后在区块浏览器或刷新页面查看结果。");
     showNotice(successMessage);
     await loadProjects();
   } catch (error) {
@@ -300,42 +560,74 @@ async function handleCreateProject(event) {
   );
 
   event.currentTarget.reset();
+  closeCreateModal();
+}
+
+function openCreateModal() {
+  if (!els.createModal) return;
+  els.createModal.hidden = false;
+  els.createModal.setAttribute("aria-hidden", "false");
+  document.body.classList.add("modal-open");
+  els.toggleCreateBtn?.classList.add("nav-link--active");
+  els.createProjectForm.querySelector("input[name='name']")?.focus();
+}
+
+function closeCreateModal() {
+  if (!els.createModal) return;
+  els.createModal.hidden = true;
+  els.createModal.setAttribute("aria-hidden", "true");
+  document.body.classList.remove("modal-open");
+  els.toggleCreateBtn?.classList.remove("nav-link--active");
 }
 
 async function handleProjectClick(event) {
-  const card = event.target.closest(".project-card");
+  const button = event.target.closest(".action-row button");
+  if (!button) return;
+
+  const card = button.closest(".project-card");
   if (!card) return;
 
   const projectId = Number(card.dataset.projectId);
-  if (event.target.classList.contains("finalize-btn")) {
+  const project = state.projects.find((item) => item.id === projectId);
+  if (!project) return;
+
+  if (button.dataset.available !== "true") {
+    showNotice(button.title || "当前暂不可执行此操作", "error");
+    return;
+  }
+
+  if (button.classList.contains("finalize-btn")) {
     await runTransaction(
       () => state.contract.finalizeProject(projectId),
       "项目已结束",
-      event.target
+      button
     );
+    return;
   }
 
-  if (event.target.classList.contains("milestone-btn")) {
+  if (button.classList.contains("milestone-btn")) {
     await runTransaction(
       () => state.contract.releaseMilestoneFunds(projectId),
       "阶段资金已释放",
-      event.target
+      button
     );
+    return;
   }
 
-  if (event.target.classList.contains("withdraw-btn")) {
+  if (button.classList.contains("withdraw-btn")) {
     await runTransaction(
       () => state.contract.withdrawFunds(projectId),
       "筹款已提现",
-      event.target
+      button
     );
+    return;
   }
 
-  if (event.target.classList.contains("refund-btn")) {
+  if (button.classList.contains("refund-btn")) {
     await runTransaction(
       () => state.contract.claimRefund(projectId),
       "退款已到账",
-      event.target
+      button
     );
   }
 }
@@ -343,11 +635,21 @@ async function handleProjectClick(event) {
 async function handleDonate(event) {
   event.preventDefault();
 
-  const card = event.target.closest(".project-card");
+  const form = event.target;
+  if (!form.classList.contains("donate-form")) return;
+
+  const card = form.closest(".project-card");
+  if (!card) return;
+
+  const amountInput = new FormData(form).get("amount");
+  if (!amountInput || Number(amountInput) <= 0) {
+    showNotice("请输入有效的捐赠金额。", "error");
+    return;
+  }
+
   const projectId = Number(card.dataset.projectId);
-  const form = new FormData(event.currentTarget);
-  const amount = ethers.parseEther(form.get("amount"));
-  const submitButton = event.submitter || event.currentTarget.querySelector("button[type='submit']");
+  const amount = ethers.parseEther(amountInput);
+  const submitButton = event.submitter || form.querySelector("button[type='submit']");
 
   await runTransaction(
     () => state.contract.donate(projectId, { value: amount }),
@@ -355,7 +657,7 @@ async function handleDonate(event) {
     submitButton
   );
 
-  event.currentTarget.reset();
+  form.reset();
 }
 
 async function init() {
@@ -374,37 +676,52 @@ async function init() {
   });
 
   els.createProjectForm.addEventListener("submit", handleCreateProject);
-  els.projectList.addEventListener("click", handleProjectClick);
-  els.projectList.addEventListener("submit", (event) => {
+  els.toggleCreateBtn?.addEventListener("click", openCreateModal);
+  els.closeCreateBtn?.addEventListener("click", closeCreateModal);
+  els.cancelCreateBtn?.addEventListener("click", closeCreateModal);
+  els.createModalBackdrop?.addEventListener("click", closeCreateModal);
+  els.projectsSection.addEventListener("click", handleBoardClick);
+  els.projectsSection.addEventListener("keydown", handleBoardKeydown);
+  els.projectsSection.addEventListener("submit", (event) => {
     if (event.target.classList.contains("donate-form")) {
-      handleDonate(event);
+      void handleDonate(event).catch((error) => {
+        showNotice(error.shortMessage || error.reason || error.message, "error");
+      });
+    }
+  });
+  els.closeDetailBtn.addEventListener("click", closeProjectDetail);
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    if (els.createModal && !els.createModal.hidden) {
+      closeCreateModal();
+      return;
+    }
+    if (state.selectedProjectId !== null) {
+      closeProjectDetail();
     }
   });
   els.refreshBtn.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
     try {
-      requireConnected();
-      setButtonBusy(event.currentTarget, true, "刷新中...");
-      await loadProjects();
-      showNotice("项目列表已刷新");
+      requireContractConfig();
+      setButtonBusy(button, true, "刷新中...");
+      const ok = await loadProjects();
+      if (ok) {
+        showNotice("项目列表已刷新");
+      }
     } catch (error) {
       showNotice(error.message, "error");
     } finally {
-      setButtonBusy(event.currentTarget, false);
+      setButtonBusy(button, false);
     }
   });
 
-  for (const button of els.filterBtns) {
+  for (const button of els.statFilterBtns) {
     button.addEventListener("click", () => {
-      els.filterBtns.forEach((item) => {
-        item.classList.remove("active");
-        item.setAttribute("aria-pressed", "false");
-      });
-      button.classList.add("active");
-      button.setAttribute("aria-pressed", "true");
-      state.filter = button.dataset.filter;
-      renderProjects();
+      setProjectFilter(button.dataset.filter);
     });
   }
+  updateFilterCards();
 
   if (window.ethereum) {
     window.ethereum.on("accountsChanged", () => window.location.reload());
@@ -413,7 +730,11 @@ async function init() {
 
   try {
     requireContractConfig();
-    showNotice("请连接钱包以读取链上众筹项目");
+    showNotice("正在读取链上众筹项目...");
+    const ok = await loadProjects();
+    if (ok) {
+      showNotice("项目列表已加载，连接钱包后可执行链上操作");
+    }
   } catch (error) {
     showNotice(error.message, "error");
   }
