@@ -103,7 +103,10 @@
         </div>
         <div class="progress-bar progress-bar--thin" aria-hidden="true"><span></span></div>
       </div>
-      <p class="project-card__compact-meta"><span class="project-time"></span></p>
+      <p class="project-card__compact-meta">
+        <span class="project-time"></span>
+        <span class="project-compact-badges"></span>
+      </p>
     </article>
   </template>
 
@@ -160,8 +163,12 @@
           <dd class="project-donors"></dd>
         </div>
         <div>
-          <dt>早鸟支持者</dt>
+          <dt>早鸟支持者 <span class="early-slots-hint"></span></dt>
           <dd class="project-early"></dd>
+        </div>
+        <div class="milestone-panel">
+          <dt>里程碑进度</dt>
+          <dd class="project-milestone"></dd>
         </div>
       </dl>
 
@@ -178,6 +185,7 @@
         <div class="action-row" aria-label="项目操作">
           <span class="action-row__label">链上操作</span>
           <button class="ghost-btn finalize-btn" type="button">结束项目</button>
+          <button class="ghost-btn mark-milestone-btn" type="button">标记里程碑</button>
           <button class="ghost-btn milestone-btn" type="button">释放 30%</button>
           <button class="ghost-btn withdraw-btn" type="button">发起人提现</button>
           <button class="danger-btn refund-btn" type="button">申请退款</button>

@@ -3,6 +3,7 @@ pragma solidity ^0.8.28;
 
 contract Crowdfunding {
     uint256 public constant EARLY_DONOR_LIMIT = 10;
+    uint256 public constant MILESTONE_THRESHOLD_PERCENT = 50;
     uint256 public constant MILESTONE_RELEASE_PERCENT = 30;
     uint256 public constant PERCENT_DENOMINATOR = 100;
 
@@ -18,6 +19,7 @@ contract Crowdfunding {
         bool finalized;
         bool successful;
         bool withdrawn;
+        bool milestoneMarked;
         bool milestoneReleased;
         uint256 donorCount;
     }
@@ -40,6 +42,7 @@ contract Crowdfunding {
     event Donated(uint256 indexed projectId, address indexed donor, uint256 amount, uint256 pledged);
     event EarlyDonorRewarded(uint256 indexed projectId, address indexed donor, uint256 rank);
     event ProjectFinalized(uint256 indexed projectId, bool successful, uint256 pledged);
+    event MilestoneMarked(uint256 indexed projectId, address indexed creator);
     event MilestoneReleased(uint256 indexed projectId, address indexed creator, uint256 amount);
     event FundsWithdrawn(uint256 indexed projectId, address indexed creator, uint256 amount);
     event RefundClaimed(uint256 indexed projectId, address indexed donor, uint256 amount);
@@ -79,6 +82,7 @@ contract Crowdfunding {
                 finalized: false,
                 successful: false,
                 withdrawn: false,
+                milestoneMarked: false,
                 milestoneReleased: false,
                 donorCount: 0
             })
@@ -125,6 +129,43 @@ contract Crowdfunding {
         emit ProjectFinalized(projectId, project.successful, project.pledged);
     }
 
+    function markMilestoneComplete(uint256 projectId)
+        external
+        projectExists(projectId)
+        onlyCreator(projectId)
+    {
+        Project storage project = projects[projectId];
+        require(!project.finalized, "Project finalized");
+        require(!project.milestoneMarked, "Milestone already marked");
+        require(!project.milestoneReleased, "Milestone already released");
+
+        project.milestoneMarked = true;
+        emit MilestoneMarked(projectId, msg.sender);
+    }
+
+    function milestoneThreshold(uint256 projectId)
+        public
+        view
+        projectExists(projectId)
+        returns (uint256)
+    {
+        Project storage project = projects[projectId];
+        return (project.goal * MILESTONE_THRESHOLD_PERCENT) / PERCENT_DENOMINATOR;
+    }
+
+    function canReleaseMilestone(uint256 projectId)
+        public
+        view
+        projectExists(projectId)
+        returns (bool)
+    {
+        Project storage project = projects[projectId];
+        if (project.finalized || project.milestoneReleased) {
+            return false;
+        }
+        return project.milestoneMarked || project.pledged >= milestoneThreshold(projectId);
+    }
+
     function releaseMilestoneFunds(uint256 projectId)
         external
         projectExists(projectId)
@@ -133,7 +174,7 @@ contract Crowdfunding {
         Project storage project = projects[projectId];
         require(!project.finalized, "Project finalized");
         require(!project.milestoneReleased, "Milestone already released");
-        require(project.pledged >= project.goal, "Goal not reached");
+        require(canReleaseMilestone(projectId), "Milestone not ready");
 
         uint256 amount = (project.pledged * MILESTONE_RELEASE_PERCENT) / PERCENT_DENOMINATOR;
         require(amount > 0, "Nothing to release");
@@ -232,5 +273,33 @@ contract Crowdfunding {
         returns (bool)
     {
         return earlyDonorAdded[projectId][donor];
+    }
+
+    function getEarlyDonorRank(uint256 projectId, address donor)
+        external
+        view
+        projectExists(projectId)
+        returns (uint256)
+    {
+        address[] storage donors = earlyDonors[projectId];
+        for (uint256 i = 0; i < donors.length; i++) {
+            if (donors[i] == donor) {
+                return i + 1;
+            }
+        }
+        return 0;
+    }
+
+    function earlyDonorSlotsRemaining(uint256 projectId)
+        external
+        view
+        projectExists(projectId)
+        returns (uint256)
+    {
+        uint256 used = earlyDonors[projectId].length;
+        if (used >= EARLY_DONOR_LIMIT) {
+            return 0;
+        }
+        return EARLY_DONOR_LIMIT - used;
     }
 }

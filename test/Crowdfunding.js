@@ -123,33 +123,71 @@ describe("Crowdfunding", function () {
     expect(project.successful).to.equal(false);
   });
 
-  it("releases a milestone payment after the goal is reached", async function () {
+  it("releases a milestone payment after the threshold is reached", async function () {
     const { crowdfunding, creator, donor } = await deployFixture();
-    const { deadline } = await createProject(crowdfunding, creator, {
+    const { deadline, goal } = await createProject(crowdfunding, creator, {
       goal: ethers.parseEther("2")
     });
 
-    await crowdfunding.connect(donor).donate(0, { value: ethers.parseEther("2") });
+    await crowdfunding.connect(donor).donate(0, { value: ethers.parseEther("1") });
+    expect(await crowdfunding.canReleaseMilestone(0)).to.equal(true);
 
     await expect(crowdfunding.connect(creator).releaseMilestoneFunds(0)).to.changeEtherBalances(
       [crowdfunding, creator],
-      [ethers.parseEther("-0.6"), ethers.parseEther("0.6")]
+      [ethers.parseEther("-0.3"), ethers.parseEther("0.3")]
     );
 
     let project = await crowdfunding.getProject(0);
     expect(project.milestoneReleased).to.equal(true);
-    expect(project.releasedAmount).to.equal(ethers.parseEther("0.6"));
+    expect(project.releasedAmount).to.equal(ethers.parseEther("0.3"));
 
+    await crowdfunding.connect(donor).donate(0, { value: ethers.parseEther("1") });
     await time.increaseTo(deadline + 1);
     await crowdfunding.finalizeProject(0);
 
     await expect(crowdfunding.connect(creator).withdrawFunds(0)).to.changeEtherBalances(
       [crowdfunding, creator],
-      [ethers.parseEther("-1.4"), ethers.parseEther("1.4")]
+      [ethers.parseEther("-1.7"), ethers.parseEther("1.7")]
     );
 
     project = await crowdfunding.getProject(0);
     expect(project.withdrawn).to.equal(true);
+    expect(await crowdfunding.milestoneThreshold(0)).to.equal(goal / 2n);
+  });
+
+  it("releases milestone funds after the creator marks completion", async function () {
+    const { crowdfunding, creator, donor } = await deployFixture();
+    await createProject(crowdfunding, creator, {
+      goal: ethers.parseEther("10")
+    });
+
+    await crowdfunding.connect(donor).donate(0, { value: ethers.parseEther("1") });
+    expect(await crowdfunding.canReleaseMilestone(0)).to.equal(false);
+
+    await expect(crowdfunding.connect(creator).markMilestoneComplete(0))
+      .to.emit(crowdfunding, "MilestoneMarked")
+      .withArgs(0, creator.address);
+
+    expect(await crowdfunding.canReleaseMilestone(0)).to.equal(true);
+
+    await expect(crowdfunding.connect(creator).releaseMilestoneFunds(0)).to.changeEtherBalances(
+      [crowdfunding, creator],
+      [ethers.parseEther("-0.3"), ethers.parseEther("0.3")]
+    );
+  });
+
+  it("tracks early donor rank and remaining slots", async function () {
+    const { crowdfunding, creator, donor, secondDonor } = await deployFixture();
+    await createProject(crowdfunding, creator);
+
+    expect(await crowdfunding.earlyDonorSlotsRemaining(0)).to.equal(10);
+    await crowdfunding.connect(donor).donate(0, { value: ethers.parseEther("0.1") });
+    expect(await crowdfunding.getEarlyDonorRank(0, donor.address)).to.equal(1);
+    expect(await crowdfunding.earlyDonorSlotsRemaining(0)).to.equal(9);
+
+    await crowdfunding.connect(secondDonor).donate(0, { value: ethers.parseEther("0.1") });
+    expect(await crowdfunding.getEarlyDonorRank(0, secondDonor.address)).to.equal(2);
+    expect(await crowdfunding.getEarlyDonorRank(0, creator.address)).to.equal(0);
   });
 
   it("blocks invalid withdrawals and refunds", async function () {
