@@ -64,7 +64,29 @@
       </article>
     </section>
 
-    <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+    <section id="notice" class="notice notice-log" role="status" aria-live="polite">
+      <div class="notice-log__bar">
+        <span class="notice-log__dot notice-log__dot--red" aria-hidden="true"></span>
+        <span class="notice-log__dot notice-log__dot--yellow" aria-hidden="true"></span>
+        <span class="notice-log__dot notice-log__dot--green" aria-hidden="true"></span>
+        <span class="notice-log__title">minics — 链上操作日志</span>
+        <span id="noticeType" class="notice-log__type">READY</span>
+      </div>
+      <div class="notice-log__body">
+        <div class="notice-log__cmd"><span class="notice-log__prompt">$</span> tail -f crowdfunding.log</div>
+        <div class="notice-log__row notice-log__row--status">
+          <span id="noticeTime" class="notice-log__time">--:--:--</span>
+          <span id="noticeLevel" class="notice-log__level">ready</span>
+          <span id="noticeMessage" class="notice-log__message">等待链上操作事件</span>
+        </div>
+        <div class="notice-log__meta">
+          <span>链上事件</span>
+          <span id="chainLogCount">0</span>
+        </div>
+        <div id="chainLogList" class="chain-log-list"></div>
+        <p id="chainLogEmpty" class="chain-log-empty">暂无链上操作记录</p>
+      </div>
+    </section>
 
     <section class="projects-section" aria-labelledby="projectsHeading">
       <div id="projectListView">

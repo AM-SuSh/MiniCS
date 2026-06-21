@@ -1,5 +1,6 @@
 import { ethers } from "./ethers.min.js";
 import { contractAbi, contractAddress } from "./contract-config.js";
+import { loadChainOperationLogs } from "./chain-log.js";
 
 // Hardhat 本地节点默认地址，已开启 CORS，无需经前端 /rpc 代理
 const RPC_URL = "http://127.0.0.1:8545";
@@ -40,6 +41,13 @@ const els = {
   walletAddress: document.getElementById("walletAddress"),
   networkDot: document.getElementById("networkDot"),
   notice: document.getElementById("notice"),
+  noticeMessage: document.getElementById("noticeMessage"),
+  noticeTime: document.getElementById("noticeTime"),
+  noticeLevel: document.getElementById("noticeLevel"),
+  noticeType: document.getElementById("noticeType"),
+  chainLogCount: document.getElementById("chainLogCount"),
+  chainLogList: document.getElementById("chainLogList"),
+  chainLogEmpty: document.getElementById("chainLogEmpty"),
   refreshBtn: document.getElementById("refreshBtn"),
   statFilterBtns: document.querySelectorAll(".stat-card--filterable"),
   summaryProjects: document.getElementById("summaryProjects"),
@@ -149,14 +157,81 @@ function formatEth(value) {
 }
 
 function showNotice(message, type = "info") {
-  els.notice.textContent = message;
-  els.notice.classList.toggle("error", type === "error");
+  const isError = type === "error";
+  const now = new Date();
+  const time = now.toLocaleTimeString("zh-CN", { hour12: false });
+
+  if (els.noticeMessage) {
+    els.noticeMessage.textContent = message;
+    els.noticeTime.textContent = time;
+    els.noticeLevel.textContent = isError ? "error" : "info";
+    els.noticeType.textContent = isError ? "ERROR" : "INFO";
+  } else {
+    els.notice.textContent = message;
+  }
+  els.notice.classList.toggle("error", isError);
   els.notice.hidden = false;
 }
 
 function clearNotice() {
-  els.notice.hidden = true;
+  els.notice.hidden = false;
+  if (els.noticeMessage) {
+    els.noticeMessage.textContent = "等待链上操作事件";
+    els.noticeTime.textContent = "--:--:--";
+    els.noticeLevel.textContent = "ready";
+    els.noticeType.textContent = "READY";
+    els.notice.classList.remove("error");
+    return;
+  }
   els.notice.textContent = "";
+}
+
+function chainLogTypeLabel(type) {
+  const labels = {
+    project_created: "create",
+    donated: "donate",
+    early_donor_rewarded: "early",
+    project_finalized: "finalize",
+    milestone_released: "milestone",
+    funds_withdrawn: "withdraw",
+    refund_claimed: "refund"
+  };
+  return labels[type] || type;
+}
+
+function renderChainLogs(logs) {
+  if (!els.chainLogList) return;
+
+  els.chainLogCount.textContent = logs.length.toString();
+  els.chainLogEmpty.hidden = logs.length > 0;
+  els.chainLogList.replaceChildren();
+
+  for (const log of [...logs].reverse()) {
+    const item = document.createElement("article");
+    item.className = `chain-log-item chain-log-item--${log.type}`;
+    item.title = `block #${log.blockNumber}`;
+
+    const time = document.createElement("span");
+    time.className = "chain-log-item__time";
+    time.textContent = log.time;
+
+    const type = document.createElement("span");
+    type.className = "chain-log-item__type";
+    type.textContent = chainLogTypeLabel(log.type);
+
+    const message = document.createElement("span");
+    message.className = "chain-log-item__message";
+    message.textContent = log.message;
+
+    item.append(time, type, message);
+    els.chainLogList.appendChild(item);
+  }
+}
+
+async function syncChainLogs(contract = getReadContract()) {
+  const logs = await loadChainOperationLogs(contract, formatEth, shortAddress);
+  renderChainLogs(logs);
+  return logs;
 }
 
 function requireContractConfig() {
@@ -390,6 +465,11 @@ async function loadProjects() {
 
       state.projects = projects;
       renderProjects();
+      try {
+        await syncChainLogs(contract);
+      } catch (logError) {
+        showNotice(`链上操作记录读取失败：${logError.message}`, "error");
+      }
       return true;
     } catch (error) {
       showNotice(formatLoadError(error), "error");
