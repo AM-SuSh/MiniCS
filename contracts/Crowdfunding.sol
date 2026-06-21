@@ -6,6 +6,7 @@ contract Crowdfunding {
     uint256 public constant MILESTONE_THRESHOLD_PERCENT = 50;
     uint256 public constant MILESTONE_RELEASE_PERCENT = 30;
     uint256 public constant PERCENT_DENOMINATOR = 100;
+    // 百分比常量做整数运算，solidity中没有浮点数，无法直接计算数值 * 0.5
 
     struct Project {
         uint256 id;
@@ -14,7 +15,7 @@ contract Crowdfunding {
         string description;
         uint256 goal;
         uint256 deadline;
-        uint256 pledged;
+        uint256 pledged;        //当前已筹金额
         uint256 releasedAmount;
         bool finalized;
         bool successful;
@@ -111,13 +112,14 @@ contract Crowdfunding {
             earlyDonors[projectId].push(msg.sender);
             emit EarlyDonorRewarded(projectId, msg.sender, earlyDonors[projectId].length);
         }
-
+        // 累加用户个人捐赠金额
         contributions[projectId][msg.sender] += msg.value;
         project.pledged += msg.value;
 
         emit Donated(projectId, msg.sender, msg.value, project.pledged);
     }
 
+    // 没有onlyCreator的限制，任何人都可以调用
     function finalizeProject(uint256 projectId) public projectExists(projectId) {
         Project storage project = projects[projectId];
         require(block.timestamp >= project.deadline, "Deadline not reached");
@@ -215,9 +217,13 @@ contract Crowdfunding {
 
         require(!project.successful, "Project succeeded");
 
-        uint256 amount = contributions[projectId][msg.sender];
-        require(amount > 0, "No contribution");
-
+        uint256 contribution = contributions[projectId][msg.sender];
+        require(contribution > 0, "No contribution");
+        // 里程碑已释放给发起人的部分不再退还，按捐赠占比分摊未释放部分
+        uint256 refundable = project.pledged - project.releasedAmount;
+        uint256 amount = (contribution * refundable) / project.pledged;
+        require(amount > 0, "Nothing to refund");
+        // 先将贡献记录清零再转回资金，降低重入风险
         contributions[projectId][msg.sender] = 0;
 
         (bool ok, ) = payable(msg.sender).call{value: amount}("");

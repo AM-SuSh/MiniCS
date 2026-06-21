@@ -237,7 +237,7 @@ function parseProject(raw, contributors, earlyDonors, myContribution = 0n, myEar
     status = raw.successful ? "成功结束" : "失败结束";
     statusType = raw.successful ? "success" : "failed";
   } else if (deadline <= now) {
-    status = "待结束";
+    status = "可结束";
     statusType = "pending";
   }
 

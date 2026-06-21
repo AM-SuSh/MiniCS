@@ -9,6 +9,7 @@ typechain-types/
 .tmp_ref/
 .tmp_logs/
 .tmp_uipro/
+src/js/contract-config.js
 src/js/contract-config.generated.js
 npm-debug.log*
 yarn-debug.log*

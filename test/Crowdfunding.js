@@ -212,5 +212,39 @@ describe("Crowdfunding", function () {
       "No contribution"
     );
   });
+
+  it("refunds donors proportionally after a failed project released milestone funds", async function () {
+    const { crowdfunding, creator, donor, secondDonor } = await deployFixture();
+    const { deadline } = await createProject(crowdfunding, creator, {
+      goal: ethers.parseEther("10")
+    });
+
+    // 里程碑门槛为目标 50%（5 ETH）。两位捐赠者各捐 2.5 ETH，合计 5 ETH 刚好达标可释放
+    await crowdfunding.connect(donor).donate(0, { value: ethers.parseEther("2.5") });
+    await crowdfunding.connect(secondDonor).donate(0, { value: ethers.parseEther("2.5") });
+
+    // 发起人提前释放 pledged 的 30%（5 * 30% = 1.5 ETH），剩 3.5 ETH 留在合约
+    await crowdfunding.connect(creator).releaseMilestoneFunds(0);
+
+    // 到期结束：pledged(5) < goal(10)，项目失败
+    await time.increaseTo(deadline + 1);
+    await crowdfunding.finalizeProject(0);
+
+    const project = await crowdfunding.getProject(0);
+    expect(project.successful).to.equal(false);
+
+    // 未释放池 = 5 - 1.5 = 3.5 ETH，按捐赠占比每人退 1.75 ETH
+    await expect(crowdfunding.connect(donor).claimRefund(0)).to.changeEtherBalances(
+      [crowdfunding, donor],
+      [ethers.parseEther("-1.75"), ethers.parseEther("1.75")]
+    );
+    await expect(crowdfunding.connect(secondDonor).claimRefund(0)).to.changeEtherBalances(
+      [crowdfunding, secondDonor],
+      [ethers.parseEther("-1.75"), ethers.parseEther("1.75")]
+    );
+
+    // 退款完成后合约余额归零，与未释放池一致，无资金缺口
+    expect(await ethers.provider.getBalance(crowdfunding.target)).to.equal(0);
+  });
 });
 
