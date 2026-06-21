@@ -3,10 +3,8 @@ pragma solidity ^0.8.28;
 
 contract Crowdfunding {
     uint256 public constant EARLY_DONOR_LIMIT = 10;
-    uint256 public constant MILESTONE_THRESHOLD_PERCENT = 50;
     uint256 public constant MILESTONE_RELEASE_PERCENT = 30;
     uint256 public constant PERCENT_DENOMINATOR = 100;
-    // 百分比常量做整数运算，solidity中没有浮点数，无法直接计算数值 * 0.5
 
     struct Project {
         uint256 id;
@@ -15,12 +13,12 @@ contract Crowdfunding {
         string description;
         uint256 goal;
         uint256 deadline;
-        uint256 pledged;        //当前已筹金额
+        uint256 milestonePercent;
+        uint256 pledged;
         uint256 releasedAmount;
         bool finalized;
         bool successful;
         bool withdrawn;
-        bool milestoneMarked;
         bool milestoneReleased;
         uint256 donorCount;
     }
@@ -38,12 +36,12 @@ contract Crowdfunding {
         address indexed creator,
         string name,
         uint256 goal,
-        uint256 deadline
+        uint256 deadline,
+        uint256 milestonePercent
     );
     event Donated(uint256 indexed projectId, address indexed donor, uint256 amount, uint256 pledged);
     event EarlyDonorRewarded(uint256 indexed projectId, address indexed donor, uint256 rank);
     event ProjectFinalized(uint256 indexed projectId, bool successful, uint256 pledged);
-    event MilestoneMarked(uint256 indexed projectId, address indexed creator);
     event MilestoneReleased(uint256 indexed projectId, address indexed creator, uint256 amount);
     event FundsWithdrawn(uint256 indexed projectId, address indexed creator, uint256 amount);
     event RefundClaimed(uint256 indexed projectId, address indexed donor, uint256 amount);
@@ -62,12 +60,14 @@ contract Crowdfunding {
         string calldata name,
         string calldata description,
         uint256 goal,
-        uint256 deadline
+        uint256 deadline,
+        uint256 milestonePercent
     ) external returns (uint256 projectId) {
         require(bytes(name).length > 0, "Name required");
         require(bytes(description).length > 0, "Description required");
         require(goal > 0, "Goal must be positive");
         require(deadline > block.timestamp, "Deadline must be future");
+        require(milestonePercent <= PERCENT_DENOMINATOR, "Invalid milestone percent");
 
         projectId = projects.length;
         projects.push(
@@ -78,18 +78,18 @@ contract Crowdfunding {
                 description: description,
                 goal: goal,
                 deadline: deadline,
+                milestonePercent: milestonePercent,
                 pledged: 0,
                 releasedAmount: 0,
                 finalized: false,
                 successful: false,
                 withdrawn: false,
-                milestoneMarked: false,
                 milestoneReleased: false,
                 donorCount: 0
             })
         );
 
-        emit ProjectCreated(projectId, msg.sender, name, goal, deadline);
+        emit ProjectCreated(projectId, msg.sender, name, goal, deadline, milestonePercent);
     }
 
     function donate(uint256 projectId) external payable projectExists(projectId) {
@@ -112,14 +112,13 @@ contract Crowdfunding {
             earlyDonors[projectId].push(msg.sender);
             emit EarlyDonorRewarded(projectId, msg.sender, earlyDonors[projectId].length);
         }
-        // 累加用户个人捐赠金额
+
         contributions[projectId][msg.sender] += msg.value;
         project.pledged += msg.value;
 
         emit Donated(projectId, msg.sender, msg.value, project.pledged);
     }
 
-    // 没有onlyCreator的限制，任何人都可以调用
     function finalizeProject(uint256 projectId) public projectExists(projectId) {
         Project storage project = projects[projectId];
         require(block.timestamp >= project.deadline, "Deadline not reached");
@@ -131,28 +130,26 @@ contract Crowdfunding {
         emit ProjectFinalized(projectId, project.successful, project.pledged);
     }
 
-    function markMilestoneComplete(uint256 projectId)
-        external
+    function hasMilestone(uint256 projectId)
+        public
+        view
         projectExists(projectId)
-        onlyCreator(projectId)
+        returns (bool)
     {
-        Project storage project = projects[projectId];
-        require(!project.finalized, "Project finalized");
-        require(!project.milestoneMarked, "Milestone already marked");
-        require(!project.milestoneReleased, "Milestone already released");
-
-        project.milestoneMarked = true;
-        emit MilestoneMarked(projectId, msg.sender);
+        return projects[projectId].milestonePercent > 0;
     }
 
-    function milestoneThreshold(uint256 projectId)
+    function milestoneThresholdAmount(uint256 projectId)
         public
         view
         projectExists(projectId)
         returns (uint256)
     {
         Project storage project = projects[projectId];
-        return (project.goal * MILESTONE_THRESHOLD_PERCENT) / PERCENT_DENOMINATOR;
+        if (project.milestonePercent == 0) {
+            return 0;
+        }
+        return (project.goal * project.milestonePercent) / PERCENT_DENOMINATOR;
     }
 
     function canReleaseMilestone(uint256 projectId)
@@ -162,10 +159,14 @@ contract Crowdfunding {
         returns (bool)
     {
         Project storage project = projects[projectId];
-        if (project.finalized || project.milestoneReleased) {
+        if (
+            project.milestonePercent == 0
+                || project.finalized
+                || project.milestoneReleased
+        ) {
             return false;
         }
-        return project.milestoneMarked || project.pledged >= milestoneThreshold(projectId);
+        return project.pledged >= milestoneThresholdAmount(projectId);
     }
 
     function releaseMilestoneFunds(uint256 projectId)
@@ -219,11 +220,11 @@ contract Crowdfunding {
 
         uint256 contribution = contributions[projectId][msg.sender];
         require(contribution > 0, "No contribution");
-        // 里程碑已释放给发起人的部分不再退还，按捐赠占比分摊未释放部分
+
         uint256 refundable = project.pledged - project.releasedAmount;
         uint256 amount = (contribution * refundable) / project.pledged;
         require(amount > 0, "Nothing to refund");
-        // 先将贡献记录清零再转回资金，降低重入风险
+
         contributions[projectId][msg.sender] = 0;
 
         (bool ok, ) = payable(msg.sender).call{value: amount}("");

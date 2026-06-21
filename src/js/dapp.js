@@ -4,7 +4,6 @@ import { contractAbi, contractAddress } from "./contract-config.js";
 // Hardhat 本地节点默认地址，已开启 CORS，无需经前端 /rpc 代理
 const RPC_URL = "http://127.0.0.1:8545";
 const LOAD_TIMEOUT_MS = 20000;
-const MILESTONE_THRESHOLD_PERCENT = 50;
 const MILESTONE_RELEASE_PERCENT = 30;
 const EARLY_DONOR_LIMIT = 10;
 
@@ -46,51 +45,101 @@ const els = {
   summaryProjects: document.getElementById("summaryProjects"),
   summaryActive: document.getElementById("summaryActive"),
   summaryEnded: document.getElementById("summaryEnded"),
-  summaryPledged: document.getElementById("summaryPledged")
+  summaryPledged: document.getElementById("summaryPledged"),
+  walletPromptModal: document.getElementById("walletPromptModal"),
+  walletPromptBackdrop: document.getElementById("walletPromptBackdrop"),
+  walletPromptMessage: document.getElementById("walletPromptMessage"),
+  walletPromptCloseBtn: document.getElementById("walletPromptCloseBtn"),
+  walletPromptConnectBtn: document.getElementById("walletPromptConnectBtn"),
+  deadlineInput: document.querySelector("input[name='deadline']")
 };
 
-function shortAddress(address) {
-  if (!address) return "-";
-  return `${address.slice(0, 6)}...${address.slice(-4)}`;
+function getMilestoneThresholdAmount(project) {
+  if (project.milestonePercent <= 0) return 0n;
+  return (project.goal * BigInt(project.milestonePercent)) / 100n;
 }
 
-function getMilestoneThreshold(goal) {
-  return (goal * BigInt(MILESTONE_THRESHOLD_PERCENT)) / 100n;
+function hasMilestone(project) {
+  return project.milestonePercent > 0;
 }
 
 function canReleaseMilestone(project) {
-  if (project.finalized || project.milestoneReleased) return false;
-  return project.milestoneMarked || project.pledged >= getMilestoneThreshold(project.goal);
+  if (!hasMilestone(project) || project.finalized || project.milestoneReleased) return false;
+  return project.pledged >= getMilestoneThresholdAmount(project);
 }
 
 function formatMilestoneStatus(project) {
-  const threshold = getMilestoneThreshold(project.goal);
-  const thresholdMet = project.pledged >= threshold;
-  const shortfall =
-    threshold > project.pledged ? threshold - project.pledged : 0n;
+  if (!hasMilestone(project)) {
+    return "创建时未设置里程碑，不支持阶段性资金释放";
+  }
+
+  const threshold = getMilestoneThresholdAmount(project);
+  const targetMet = project.pledged >= threshold;
+  const shortfall = threshold > project.pledged ? threshold - project.pledged : 0n;
 
   const parts = [
     `当前进度 ${project.percent.toFixed(1)}%（${formatEth(project.pledged)} / ${formatEth(project.goal)} ETH）`,
-    thresholdMet
-      ? `释放门槛 ${MILESTONE_THRESHOLD_PERCENT}%（${formatEth(threshold)} ETH）已达标 ✓`
-      : `释放门槛 ${MILESTONE_THRESHOLD_PERCENT}%（${formatEth(threshold)} ETH），还差 ${formatEth(shortfall)} ETH`
+    targetMet
+      ? `里程碑 ${project.milestonePercent}%（${formatEth(threshold)} ETH）已达成 ✓`
+      : `里程碑 ${project.milestonePercent}%（${formatEth(threshold)} ETH），还差 ${formatEth(shortfall)} ETH`
   ];
-
-  if (project.milestoneMarked) {
-    parts.push("发起人已标记里程碑 ✓");
-  } else {
-    parts.push("或由发起人标记里程碑后释放");
-  }
 
   if (project.milestoneReleased) {
     parts.push(`已释放 ${MILESTONE_RELEASE_PERCENT}%（${formatEth(project.releasedAmount)} ETH）`);
   } else if (canReleaseMilestone(project)) {
     parts.push(`可释放 ${MILESTONE_RELEASE_PERCENT}% 阶段性资金`);
   } else {
-    parts.push("暂不可释放阶段性资金");
+    parts.push("达成里程碑后，发起人可释放部分资金");
   }
 
   return parts.join(" · ");
+}
+
+function isWalletConnected() {
+  return Boolean(state.contract && state.account);
+}
+
+function openWalletPrompt(message = "进行链上操作前，需要先连接 MetaMask 钱包。") {
+  if (!els.walletPromptModal) {
+    showNotice("请先连接钱包。", "error");
+    return;
+  }
+  els.walletPromptMessage.textContent = message;
+  els.walletPromptModal.hidden = false;
+  els.walletPromptModal.setAttribute("aria-hidden", "false");
+  document.body.classList.add("modal-open");
+}
+
+function closeWalletPrompt() {
+  if (!els.walletPromptModal) return;
+  els.walletPromptModal.hidden = true;
+  els.walletPromptModal.setAttribute("aria-hidden", "true");
+  if (els.createModal?.hidden !== false) {
+    document.body.classList.remove("modal-open");
+  }
+}
+
+function requireWallet(actionLabel = "进行链上操作") {
+  if (isWalletConnected()) return true;
+  openWalletPrompt(`${actionLabel}前，请先连接 MetaMask 钱包。`);
+  return false;
+}
+
+function syncDeadlineEmptyState() {
+  if (!els.deadlineInput) return;
+  els.deadlineInput.classList.toggle("is-empty", !els.deadlineInput.value);
+}
+
+function getContributorAmount(contributorDetails, address) {
+  const detail = contributorDetails.find(
+    (item) => item.address.toLowerCase() === address.toLowerCase()
+  );
+  return detail?.amount ?? 0n;
+}
+
+function shortAddress(address) {
+  if (!address) return "-";
+  return `${address.slice(0, 6)}...${address.slice(-4)}`;
 }
 
 function formatEth(value) {
@@ -168,10 +217,24 @@ function withTimeout(promise, message) {
   ]);
 }
 
+function showSlowTransactionNotice(message) {
+  const timerId = window.setTimeout(() => {
+    showNotice(message);
+  }, LOAD_TIMEOUT_MS);
+
+  return () => window.clearTimeout(timerId);
+}
+
 function formatLoadError(error) {
   const message = error?.shortMessage || error?.reason || error?.message || String(error);
   if (message.includes("could not decode result data") || error?.code === "BAD_DATA") {
-    return "链上找不到众筹合约，本地区块链可能已重启。请在新终端运行 npm run deploy:localhost 重新部署。";
+    return "链上找不到众筹合约，或合约版本与前端不一致。请在新终端运行 npm run deploy:localhost 重新部署，并强制刷新页面（Ctrl+F5）。";
+  }
+  if (
+    message.includes("unrecognized-selector") ||
+    (message.includes("missing revert data") && !message.includes("Project does not exist"))
+  ) {
+    return "链上合约版本与前端 ABI 不匹配。请确认 npm run node 正在运行，再执行 npm run deploy:localhost，然后强制刷新浏览器（Ctrl+F5）。";
   }
   return message;
 }
@@ -188,6 +251,18 @@ async function ensureContractDeployed() {
   const code = await provider.getCode(contractAddress);
   if (!code || code === "0x") {
     throw new Error("链上找不到众筹合约，本地区块链可能已重启。请在新终端运行 npm run deploy:localhost 重新部署。");
+  }
+
+  const contract = new ethers.Contract(contractAddress, contractAbi, provider);
+  try {
+    await contract.milestoneThresholdAmount(0);
+  } catch (error) {
+    const message = error?.shortMessage || error?.reason || error?.message || "";
+    if (!message.includes("Project does not exist")) {
+      throw new Error(
+        "链上合约版本与前端不一致。请运行 npm run deploy:localhost 重新部署，并强制刷新浏览器（Ctrl+F5）。"
+      );
+    }
   }
 }
 
@@ -224,7 +299,7 @@ async function connectWallet() {
   els.networkDot.classList.add("connected");
 }
 
-function parseProject(raw, contributors, earlyDonors, myContribution = 0n, myEarlyRank = 0) {
+function parseProject(raw, contributors, contributorDetails, earlyDonors, myContribution = 0n, myEarlyRank = 0) {
   const now = Math.floor(Date.now() / 1000);
   const deadline = Number(raw.deadline);
   const pledged = raw.pledged;
@@ -253,10 +328,11 @@ function parseProject(raw, contributors, earlyDonors, myContribution = 0n, myEar
     finalized: raw.finalized,
     successful: raw.successful,
     withdrawn: raw.withdrawn,
-    milestoneMarked: raw.milestoneMarked,
+    milestonePercent: Number(raw.milestonePercent),
     milestoneReleased: raw.milestoneReleased,
     donorCount: Number(raw.donorCount),
     contributors,
+    contributorDetails,
     earlyDonors,
     myContribution,
     myEarlyRank,
@@ -291,9 +367,22 @@ async function loadProjects() {
               contract.getEarlyDonors(id),
               account ? contract.getContribution(id, account) : Promise.resolve(0n),
               account ? contract.getEarlyDonorRank(id, account) : Promise.resolve(0n)
-            ]).then(([raw, contributors, earlyDonors, myContribution, myEarlyRank]) =>
-              parseProject(raw, contributors, earlyDonors, myContribution, Number(myEarlyRank))
-            )
+            ]).then(async ([raw, contributors, earlyDonors, myContribution, myEarlyRank]) => {
+              const contributorDetails = await Promise.all(
+                contributors.map(async (address) => ({
+                  address,
+                  amount: await contract.getContribution(id, address)
+                }))
+              );
+              return parseProject(
+                raw,
+                contributors,
+                contributorDetails,
+                earlyDonors,
+                myContribution,
+                Number(myEarlyRank)
+              );
+            })
           )
         ),
         "读取项目详情超时，请稍后重试。"
@@ -374,10 +463,12 @@ function getProjectActions(project) {
   const ended = project.deadline <= now;
 
   const canFinalize = !project.finalized && ended;
-  const canMarkMilestone =
-    isCreator && !project.finalized && !project.milestoneMarked && !project.milestoneReleased;
   const canMilestone =
-    isCreator && !project.finalized && !project.milestoneReleased && canReleaseMilestone(project);
+    isCreator &&
+    hasMilestone(project) &&
+    !project.finalized &&
+    !project.milestoneReleased &&
+    canReleaseMilestone(project);
   const canWithdraw = isCreator && project.finalized && project.successful && !project.withdrawn;
   const canRefund =
     !project.successful && project.myContribution > 0n && (project.finalized || ended);
@@ -386,20 +477,14 @@ function getProjectActions(project) {
   if (project.finalized) finalizeReason = "项目已结算";
   else if (!ended) finalizeReason = "尚未到截止时间";
 
-  let markMilestoneReason = "";
-  if (!state.account) markMilestoneReason = "请先连接钱包";
-  else if (!isCreator) markMilestoneReason = "仅项目发起人可操作";
-  else if (project.finalized) markMilestoneReason = "项目已结算";
-  else if (project.milestoneMarked) markMilestoneReason = "里程碑已标记";
-  else if (project.milestoneReleased) markMilestoneReason = "阶段资金已释放";
-
   let milestoneReason = "";
-  if (!state.account) milestoneReason = "请先连接钱包";
+  if (!hasMilestone(project)) milestoneReason = "创建时未设置里程碑";
+  else if (!state.account) milestoneReason = "请先连接钱包";
   else if (!isCreator) milestoneReason = "仅项目发起人可操作";
   else if (project.finalized) milestoneReason = "项目已结算";
   else if (project.milestoneReleased) milestoneReason = "阶段资金已释放";
-  else if (!canReleaseMilestone(project)) {
-    milestoneReason = `需筹满 ${MILESTONE_THRESHOLD_PERCENT}% 或先标记里程碑完成`;
+  else if (project.pledged < getMilestoneThresholdAmount(project)) {
+    milestoneReason = `需筹满里程碑 ${project.milestonePercent}%（${formatEth(getMilestoneThresholdAmount(project))} ETH）`;
   }
 
   let withdrawReason = "";
@@ -418,7 +503,6 @@ function getProjectActions(project) {
   return {
     canDonate: !project.finalized && project.deadline > now,
     finalize: { available: canFinalize, reason: finalizeReason },
-    markMilestone: { available: canMarkMilestone, reason: markMilestoneReason },
     milestone: { available: canMilestone, reason: milestoneReason },
     withdraw: { available: canWithdraw, reason: withdrawReason },
     refund: { available: canRefund, reason: refundReason }
@@ -459,10 +543,14 @@ function populateCompactCard(card, project) {
     const slotsLeft = Math.max(EARLY_DONOR_LIMIT - project.earlyDonors.length, 0);
     if (slotsLeft > 0) badges.push(`早鸟余 ${slotsLeft}`);
     else if (project.earlyDonors.length > 0) badges.push("早鸟已满");
-    if (!project.milestoneReleased && canReleaseMilestone(project)) {
-      badges.push("可释放资金");
-    } else if (project.milestoneReleased) {
-      badges.push("已释放 30%");
+    if (hasMilestone(project)) {
+      if (!project.milestoneReleased && canReleaseMilestone(project)) {
+        badges.push("可释放资金");
+      } else if (project.milestoneReleased) {
+        badges.push("已释放 30%");
+      } else {
+        badges.push(`里程碑 ${project.milestonePercent}%`);
+      }
     }
     badgesEl.textContent = badges.length ? ` · ${badges.join(" · ")}` : "";
   }
@@ -486,8 +574,19 @@ function populateDetailCard(card, project) {
   card.querySelector(".project-time").textContent = getTimeLabel(project.deadline, project.finalized);
   card.querySelector(".project-creator").textContent = shortAddress(project.creator);
   card.querySelector(".project-creator").title = project.creator;
-  card.querySelector(".project-donors").textContent =
-    project.contributors.map(shortAddress).join(", ") || "暂无";
+  const donorsEl = card.querySelector(".project-donors");
+  if (project.contributorDetails.length === 0) {
+    donorsEl.textContent = "暂无";
+    donorsEl.classList.remove("donor-list");
+  } else {
+    donorsEl.classList.add("donor-list");
+    donorsEl.innerHTML = project.contributorDetails
+      .map(
+        ({ address, amount }) =>
+          `<span class="donor-chip" title="${address}">${shortAddress(address)} · ${formatEth(amount)} ETH</span>`
+      )
+      .join("");
+  }
   const earlyList = card.querySelector(".project-early");
   const earlySlotsHint = card.querySelector(".early-slots-hint");
   const slotsLeft = Math.max(EARLY_DONOR_LIMIT - project.earlyDonors.length, 0);
@@ -505,7 +604,8 @@ function populateDetailCard(card, project) {
         const rank = index + 1;
         const isMe =
           state.account && address.toLowerCase() === state.account.toLowerCase();
-        return `<span class="early-badge${isMe ? " early-badge--me" : ""}" title="第 ${rank} 位早鸟支持者">#${rank} ${shortAddress(address)}</span>`;
+        const amount = getContributorAmount(project.contributorDetails, address);
+        return `<span class="early-badge${isMe ? " early-badge--me" : ""}" title="第 ${rank} 位早鸟支持者 · ${formatEth(amount)} ETH">#${rank} ${shortAddress(address)} · ${formatEth(amount)} ETH</span>`;
       })
       .join("");
   }
@@ -532,8 +632,13 @@ function populateDetailCard(card, project) {
   donateForm.hidden = !actions.canDonate;
   card.querySelector(".donate-form button").disabled = !actions.canDonate;
   applyActionButton(card.querySelector(".finalize-btn"), actions.finalize);
-  applyActionButton(card.querySelector(".mark-milestone-btn"), actions.markMilestone);
-  applyActionButton(card.querySelector(".milestone-btn"), actions.milestone);
+  const milestoneBtn = card.querySelector(".milestone-btn");
+  if (hasMilestone(project)) {
+    milestoneBtn.hidden = false;
+    applyActionButton(milestoneBtn, actions.milestone);
+  } else {
+    milestoneBtn.hidden = true;
+  }
   applyActionButton(card.querySelector(".withdraw-btn"), actions.withdraw);
   applyActionButton(card.querySelector(".refund-btn"), actions.refund);
 }
@@ -627,13 +732,22 @@ function handleBoardKeydown(event) {
 }
 
 async function runTransaction(action, successMessage, trigger) {
+  let clearSlowNotice = () => {};
+
   try {
     requireConnected();
     clearNotice();
     setButtonBusy(trigger, true);
-    const tx = await withTimeout(action(), "交易提交超时，请检查 MetaMask 是否已弹出并确认。");
+
+    clearSlowNotice = showSlowTransactionNotice("MetaMask 确认较慢，请在钱包弹窗中确认或拒绝；确认后会自动刷新页面数据。");
+    const tx = await action();
+    clearSlowNotice();
+
     showNotice("交易已提交，等待区块确认...");
-    await withTimeout(tx.wait(), "交易确认超时，请稍后在区块浏览器或刷新页面查看结果。");
+    clearSlowNotice = showSlowTransactionNotice("区块确认较慢，请稍候；确认完成后会自动刷新页面数据。");
+    await tx.wait();
+    clearSlowNotice();
+
     showNotice(successMessage);
     await loadProjects();
     return true;
@@ -641,6 +755,7 @@ async function runTransaction(action, successMessage, trigger) {
     showNotice(error.shortMessage || error.reason || error.message, "error");
     return false;
   } finally {
+    clearSlowNotice();
     setButtonBusy(trigger, false);
   }
 }
@@ -648,14 +763,27 @@ async function runTransaction(action, successMessage, trigger) {
 async function handleCreateProject(event) {
   event.preventDefault();
 
+  if (!requireWallet("创建众筹项目")) return;
+
   const formEl = event.currentTarget;
   const submitter = event.submitter;
   const form = new FormData(formEl);
   const name = form.get("name").trim();
   const description = form.get("description").trim();
   const goalInput = form.get("goal");
+  const milestoneInput = String(form.get("milestonePercent") ?? "").trim();
   const deadlineValue = form.get("deadline");
   const deadline = Math.floor(new Date(deadlineValue).getTime() / 1000);
+  const goal = ethers.parseEther(goalInput);
+  let milestonePercent = 0;
+
+  if (milestoneInput) {
+    milestonePercent = Number(milestoneInput);
+    if (!Number.isInteger(milestonePercent) || milestonePercent < 1 || milestonePercent > 100) {
+      showNotice("里程碑比例必须是 1 到 100 之间的整数。", "error");
+      return;
+    }
+  }
 
   if (deadline <= Math.floor(Date.now() / 1000)) {
     showNotice("截止时间必须晚于当前时间。", "error");
@@ -663,8 +791,8 @@ async function handleCreateProject(event) {
   }
 
   const ok = await runTransaction(
-    () => state.contract.createProject(name, description, ethers.parseEther(goalInput), deadline),
-    "项目创建成功",
+    () => state.contract.createProject(name, description, goal, deadline, milestonePercent),
+    milestonePercent > 0 ? "项目创建成功，已登记里程碑" : "项目创建成功",
     submitter
   );
 
@@ -676,6 +804,8 @@ async function handleCreateProject(event) {
 
 function openCreateModal() {
   if (!els.createModal) return;
+  if (!requireWallet("创建众筹项目")) return;
+
   els.createModal.hidden = false;
   els.createModal.setAttribute("aria-hidden", "false");
   document.body.classList.add("modal-open");
@@ -687,7 +817,9 @@ function closeCreateModal() {
   if (!els.createModal) return;
   els.createModal.hidden = true;
   els.createModal.setAttribute("aria-hidden", "true");
-  document.body.classList.remove("modal-open");
+  if (els.walletPromptModal?.hidden !== false) {
+    document.body.classList.remove("modal-open");
+  }
   els.toggleCreateBtn?.classList.remove("nav-link--active");
 }
 
@@ -703,6 +835,7 @@ async function handleProjectClick(event) {
   if (!project) return;
 
   if (button.dataset.available !== "true") {
+    if (!requireWallet("执行此操作")) return;
     showNotice(button.title || "当前暂不可执行此操作", "error");
     return;
   }
@@ -711,15 +844,6 @@ async function handleProjectClick(event) {
     await runTransaction(
       () => state.contract.finalizeProject(projectId),
       "项目已结束",
-      button
-    );
-    return;
-  }
-
-  if (button.classList.contains("mark-milestone-btn")) {
-    await runTransaction(
-      () => state.contract.markMilestoneComplete(projectId),
-      "里程碑已标记，可释放阶段性资金",
       button
     );
     return;
@@ -757,6 +881,8 @@ async function handleDonate(event) {
 
   const form = event.target;
   if (!form.classList.contains("donate-form")) return;
+
+  if (!requireWallet("捐赠")) return;
 
   const card = form.closest(".project-card");
   if (!card) return;
@@ -811,6 +937,15 @@ async function init() {
   els.closeCreateBtn?.addEventListener("click", closeCreateModal);
   els.cancelCreateBtn?.addEventListener("click", closeCreateModal);
   els.createModalBackdrop?.addEventListener("click", closeCreateModal);
+  els.walletPromptBackdrop?.addEventListener("click", closeWalletPrompt);
+  els.walletPromptCloseBtn?.addEventListener("click", closeWalletPrompt);
+  els.walletPromptConnectBtn?.addEventListener("click", async () => {
+    closeWalletPrompt();
+    els.connectWalletBtn?.click();
+  });
+  els.deadlineInput?.addEventListener("input", syncDeadlineEmptyState);
+  els.deadlineInput?.addEventListener("change", syncDeadlineEmptyState);
+  syncDeadlineEmptyState();
   els.projectsSection.addEventListener("click", handleBoardClick);
   els.projectsSection.addEventListener("keydown", handleBoardKeydown);
   els.projectsSection.addEventListener("submit", (event) => {
@@ -823,6 +958,10 @@ async function init() {
   els.closeDetailBtn.addEventListener("click", closeProjectDetail);
   document.addEventListener("keydown", (event) => {
     if (event.key !== "Escape") return;
+    if (els.walletPromptModal && !els.walletPromptModal.hidden) {
+      closeWalletPrompt();
+      return;
+    }
     if (els.createModal && !els.createModal.hidden) {
       closeCreateModal();
       return;

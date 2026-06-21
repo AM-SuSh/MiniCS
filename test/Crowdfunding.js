@@ -16,6 +16,7 @@ describe("Crowdfunding", function () {
     const latest = await time.latest();
     const deadline = overrides.deadline ?? latest + 7 * 24 * 60 * 60;
     const goal = overrides.goal ?? ethers.parseEther("5");
+    const milestonePercent = overrides.milestonePercent ?? 0n;
 
     await crowdfunding
       .connect(creator)
@@ -23,10 +24,11 @@ describe("Crowdfunding", function () {
         overrides.name ?? "Open Source Lab",
         overrides.description ?? "Fund a small open source hardware lab.",
         goal,
-        deadline
+        deadline,
+        milestonePercent
       );
 
-    return { projectId: 0, goal, deadline };
+    return { projectId: 0, goal, deadline, milestonePercent };
   }
 
   it("creates a project with a unique id", async function () {
@@ -38,10 +40,10 @@ describe("Crowdfunding", function () {
     await expect(
       crowdfunding
         .connect(creator)
-        .createProject("Campus DAO", "A student community project.", goal, deadline)
+        .createProject("Campus DAO", "A student community project.", goal, deadline, 0)
     )
       .to.emit(crowdfunding, "ProjectCreated")
-      .withArgs(0, creator.address, "Campus DAO", goal, deadline);
+      .withArgs(0, creator.address, "Campus DAO", goal, deadline, 0);
 
     expect(await crowdfunding.projectCount()).to.equal(1);
 
@@ -51,6 +53,21 @@ describe("Crowdfunding", function () {
     expect(project.name).to.equal("Campus DAO");
     expect(project.goal).to.equal(goal);
     expect(project.deadline).to.equal(deadline);
+    expect(project.milestonePercent).to.equal(0);
+  });
+
+  it("stores milestone percent only at creation time", async function () {
+    const { crowdfunding, creator } = await deployFixture();
+
+    await createProject(crowdfunding, creator, {
+      goal: ethers.parseEther("5"),
+      milestonePercent: 50n
+    });
+
+    const project = await crowdfunding.getProject(0);
+    expect(project.milestonePercent).to.equal(50);
+    expect(await crowdfunding.hasMilestone(0)).to.equal(true);
+    expect(await crowdfunding.milestoneThresholdAmount(0)).to.equal(ethers.parseEther("2.5"));
   });
 
   it("accepts donations and records contributors plus early donors", async function () {
@@ -123,13 +140,17 @@ describe("Crowdfunding", function () {
     expect(project.successful).to.equal(false);
   });
 
-  it("releases a milestone payment after the threshold is reached", async function () {
+  it("releases milestone funds after pledged amount reaches the preset percent", async function () {
     const { crowdfunding, creator, donor } = await deployFixture();
     const { deadline, goal } = await createProject(crowdfunding, creator, {
-      goal: ethers.parseEther("2")
+      goal: ethers.parseEther("2"),
+      milestonePercent: 50n
     });
 
-    await crowdfunding.connect(donor).donate(0, { value: ethers.parseEther("1") });
+    await crowdfunding.connect(donor).donate(0, { value: ethers.parseEther("0.5") });
+    expect(await crowdfunding.canReleaseMilestone(0)).to.equal(false);
+
+    await crowdfunding.connect(donor).donate(0, { value: ethers.parseEther("0.5") });
     expect(await crowdfunding.canReleaseMilestone(0)).to.equal(true);
 
     await expect(crowdfunding.connect(creator).releaseMilestoneFunds(0)).to.changeEtherBalances(
@@ -140,6 +161,7 @@ describe("Crowdfunding", function () {
     let project = await crowdfunding.getProject(0);
     expect(project.milestoneReleased).to.equal(true);
     expect(project.releasedAmount).to.equal(ethers.parseEther("0.3"));
+    expect(project.milestonePercent).to.equal(50);
 
     await crowdfunding.connect(donor).donate(0, { value: ethers.parseEther("1") });
     await time.increaseTo(deadline + 1);
@@ -152,28 +174,23 @@ describe("Crowdfunding", function () {
 
     project = await crowdfunding.getProject(0);
     expect(project.withdrawn).to.equal(true);
-    expect(await crowdfunding.milestoneThreshold(0)).to.equal(goal / 2n);
+    expect(project.goal).to.equal(goal);
   });
 
-  it("releases milestone funds after the creator marks completion", async function () {
+  it("blocks milestone release when no milestone was set at creation", async function () {
     const { crowdfunding, creator, donor } = await deployFixture();
     await createProject(crowdfunding, creator, {
-      goal: ethers.parseEther("10")
+      goal: ethers.parseEther("5"),
+      milestonePercent: 0n
     });
 
-    await crowdfunding.connect(donor).donate(0, { value: ethers.parseEther("1") });
+    await crowdfunding.connect(donor).donate(0, { value: ethers.parseEther("5") });
+    expect(await crowdfunding.hasMilestone(0)).to.equal(false);
     expect(await crowdfunding.canReleaseMilestone(0)).to.equal(false);
 
-    await expect(crowdfunding.connect(creator).markMilestoneComplete(0))
-      .to.emit(crowdfunding, "MilestoneMarked")
-      .withArgs(0, creator.address);
-
-    expect(await crowdfunding.canReleaseMilestone(0)).to.equal(true);
-
-    await expect(crowdfunding.connect(creator).releaseMilestoneFunds(0)).to.changeEtherBalances(
-      [crowdfunding, creator],
-      [ethers.parseEther("-0.3"), ethers.parseEther("0.3")]
-    );
+    await expect(
+      crowdfunding.connect(creator).releaseMilestoneFunds(0)
+    ).to.be.revertedWith("Milestone not ready");
   });
 
   it("tracks early donor rank and remaining slots", async function () {
@@ -216,24 +233,21 @@ describe("Crowdfunding", function () {
   it("refunds donors proportionally after a failed project released milestone funds", async function () {
     const { crowdfunding, creator, donor, secondDonor } = await deployFixture();
     const { deadline } = await createProject(crowdfunding, creator, {
-      goal: ethers.parseEther("10")
+      goal: ethers.parseEther("10"),
+      milestonePercent: 50n
     });
 
-    // 里程碑门槛为目标 50%（5 ETH）。两位捐赠者各捐 2.5 ETH，合计 5 ETH 刚好达标可释放
     await crowdfunding.connect(donor).donate(0, { value: ethers.parseEther("2.5") });
     await crowdfunding.connect(secondDonor).donate(0, { value: ethers.parseEther("2.5") });
 
-    // 发起人提前释放 pledged 的 30%（5 * 30% = 1.5 ETH），剩 3.5 ETH 留在合约
     await crowdfunding.connect(creator).releaseMilestoneFunds(0);
 
-    // 到期结束：pledged(5) < goal(10)，项目失败
     await time.increaseTo(deadline + 1);
     await crowdfunding.finalizeProject(0);
 
     const project = await crowdfunding.getProject(0);
     expect(project.successful).to.equal(false);
 
-    // 未释放池 = 5 - 1.5 = 3.5 ETH，按捐赠占比每人退 1.75 ETH
     await expect(crowdfunding.connect(donor).claimRefund(0)).to.changeEtherBalances(
       [crowdfunding, donor],
       [ethers.parseEther("-1.75"), ethers.parseEther("1.75")]
@@ -243,8 +257,6 @@ describe("Crowdfunding", function () {
       [ethers.parseEther("-1.75"), ethers.parseEther("1.75")]
     );
 
-    // 退款完成后合约余额归零，与未释放池一致，无资金缺口
     expect(await ethers.provider.getBalance(crowdfunding.target)).to.equal(0);
   });
 });
-

@@ -185,14 +185,27 @@
         <div class="action-row" aria-label="项目操作">
           <span class="action-row__label">链上操作</span>
           <button class="ghost-btn finalize-btn" type="button">结束项目</button>
-          <button class="ghost-btn mark-milestone-btn" type="button">标记里程碑</button>
-          <button class="ghost-btn milestone-btn" type="button">释放 30%</button>
+          <button class="ghost-btn milestone-btn" type="button">释放资金</button>
           <button class="ghost-btn withdraw-btn" type="button">发起人提现</button>
           <button class="danger-btn refund-btn" type="button">申请退款</button>
         </div>
       </footer>
     </article>
   </template>
+
+  <div id="walletPromptModal" class="wallet-prompt-modal" hidden aria-hidden="true">
+    <button id="walletPromptBackdrop" class="wallet-prompt-modal__backdrop" type="button"
+      aria-label="关闭提示"></button>
+    <div class="wallet-prompt-modal__dialog" role="alertdialog" aria-modal="true"
+      aria-labelledby="walletPromptTitle">
+      <h2 id="walletPromptTitle">请先连接钱包</h2>
+      <p id="walletPromptMessage">进行链上操作前，需要先连接 MetaMask 钱包。</p>
+      <div class="wallet-prompt-modal__actions">
+        <button id="walletPromptCloseBtn" class="ghost-btn" type="button">稍后再说</button>
+        <button id="walletPromptConnectBtn" class="primary-btn" type="button">连接钱包</button>
+      </div>
+    </div>
+  </div>
 
   <div id="createModal" class="create-modal" hidden aria-hidden="true">
     <button id="createModalBackdrop" class="create-modal__backdrop" type="button" aria-label="关闭创建窗口"></button>
@@ -217,8 +230,15 @@
           <input name="goal" type="number" min="0.0001" step="0.0001" required placeholder="5" inputmode="decimal">
         </label>
         <label>
+          里程碑比例 (%)
+          <input name="milestonePercent" type="number" min="1" max="100" step="1"
+            placeholder="选填，仅创建时可设置，如 50" inputmode="numeric">
+        </label>
+        <p class="form-hint">设置后，筹款达到目标金额的这一比例时，发起人可释放当前已筹金额的 30%。留空表示不设里程碑。</p>
+        <label>
           截止时间
-          <input name="deadline" type="datetime-local" required>
+          <input name="deadline" class="datetime-input is-empty" type="datetime-local" required
+            title="请选择晚于当前时间的截止时间">
         </label>
         <div class="create-modal__actions">
           <button id="cancelCreateBtn" class="ghost-btn" type="button">取消</button>
