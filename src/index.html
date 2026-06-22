@@ -43,14 +43,14 @@
 
   <main class="page-main">
     <section id="statsStrip" class="stats-strip" aria-label="众筹统计与筛选">
-      <button type="button" class="stat-card stat-card--filterable stat-card--selected" data-filter="all"
+      <button type="button" class="stat-card stat-card--filterable stat-card--selected" data-filter="active"
         aria-pressed="true">
-        <span>项目总数</span>
+        <span>进行中</span>
         <strong id="summaryProjects">0</strong>
       </button>
-      <button type="button" class="stat-card stat-card--filterable stat-card--tone-mint" data-filter="active"
+      <button type="button" class="stat-card stat-card--filterable stat-card--tone-mint" data-filter="pending"
         aria-pressed="false">
-        <span>进行中</span>
+        <span>可结束</span>
         <strong id="summaryActive">0</strong>
       </button>
       <button type="button" class="stat-card stat-card--filterable stat-card--tone-lemon" data-filter="ended"
@@ -140,7 +140,10 @@
           <h2 class="project-title"></h2>
           <p class="project-description"></p>
         </div>
-        <span class="project-status"></span>
+        <div class="project-card__header-meta">
+          <span class="project-creator project-creator-chip mono"></span>
+          <span class="project-status"></span>
+        </div>
       </header>
 
       <section class="project-card__funding" aria-label="筹款进度">
@@ -177,10 +180,6 @@
 
       <dl class="project-meta">
         <div>
-          <dt>发起人</dt>
-          <dd class="project-creator mono"></dd>
-        </div>
-        <div>
           <dt>捐赠者</dt>
           <dd class="project-donors"></dd>
         </div>
@@ -188,11 +187,21 @@
           <dt>早鸟支持者 <span class="early-slots-hint"></span></dt>
           <dd class="project-early"></dd>
         </div>
-        <div class="milestone-panel">
-          <dt>里程碑进度</dt>
-          <dd class="project-milestone"></dd>
-        </div>
       </dl>
+
+      <section class="milestone-panel" aria-label="里程碑进度">
+        <div class="milestone-panel__head">
+          <span class="milestone-panel__label">
+            里程碑进度
+            <span class="milestone-panel__target"></span>
+          </span>
+          <span class="milestone-panel__value"></span>
+        </div>
+        <div class="milestone-progress" aria-hidden="true">
+          <span class="milestone-progress__fill"></span>
+          <span class="milestone-progress__marker"></span>
+        </div>
+      </section>
 
       <footer class="project-card__footer">
         <form class="donate-form">

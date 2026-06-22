@@ -62,6 +62,27 @@ function eventType(eventName) {
     .toLowerCase();
 }
 
+export async function loadProjectFinalizeTimes(contract) {
+  const logs = await contract.queryFilter(contract.filters.ProjectFinalized(), 0, "latest");
+  if (logs.length === 0) return new Map();
+
+  const provider = contract.runner?.provider || contract.runner;
+  const blockNumbers = [...new Set(logs.map((log) => Number(log.blockNumber)))];
+  const blocks = provider?.getBlock
+    ? await Promise.all(blockNumbers.map((blockNumber) => provider.getBlock(blockNumber)))
+    : [];
+  const blockTimes = new Map(
+    blocks.filter(Boolean).map((block) => [Number(block.number), Number(block.timestamp)])
+  );
+
+  const times = new Map();
+  for (const log of logs) {
+    const projectId = Number(log.args.projectId);
+    times.set(projectId, blockTimes.get(Number(log.blockNumber)) ?? 0);
+  }
+  return times;
+}
+
 export async function loadChainOperationLogs(contract, formatEth, shortAddress) {
   const eventGroups = await Promise.all(
     EVENT_NAMES.map(async (eventName) => {

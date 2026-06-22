@@ -8,6 +8,7 @@ typechain-types/
 .idea
 .tmp_ref/
 .tmp_logs/
+.tmp_chrome_verify/
 .tmp_uipro/
 src/js/contract-config.js
 src/js/contract-config.generated.js

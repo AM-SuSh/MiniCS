@@ -1,12 +1,12 @@
 import { ethers } from "./ethers.min.js";
 import { contractAbi, contractAddress } from "./contract-config.js";
-import { loadChainOperationLogs } from "./chain-log.js";
+import { loadChainOperationLogs, loadProjectFinalizeTimes } from "./chain-log.js";
 
 // Hardhat 本地节点默认地址，已开启 CORS，无需经前端 /rpc 代理
 const RPC_URL = "http://127.0.0.1:8545";
 const LOAD_TIMEOUT_MS = 20000;
-const MILESTONE_RELEASE_PERCENT = 30;
 const EARLY_DONOR_LIMIT = 10;
+const LIFECYCLE_TICK_MS = 30000;
 
 const state = {
   provider: null,
@@ -15,10 +15,12 @@ const state = {
   readProvider: null,
   readContract: null,
   account: "",
-  filter: "all",
+  filter: "active",
   projects: [],
   loadProjectsPromise: null,
-  selectedProjectId: null
+  selectedProjectId: null,
+  lifecycleInterval: null,
+  lifecycleDeadlineTimer: null
 };
 
 const els = {
@@ -76,31 +78,30 @@ function canReleaseMilestone(project) {
   return project.pledged >= getMilestoneThresholdAmount(project);
 }
 
-function formatMilestoneStatus(project) {
-  if (!hasMilestone(project)) {
-    return "创建时未设置里程碑，不支持阶段性资金释放";
-  }
+function renderMilestoneProgress(card, project) {
+  const panel = card.querySelector(".milestone-panel");
+  if (!panel) return;
 
+  panel.hidden = !hasMilestone(project);
+  if (!hasMilestone(project)) return;
+
+  const fill = panel.querySelector(".milestone-progress__fill");
+  const marker = panel.querySelector(".milestone-progress__marker");
+  const target = panel.querySelector(".milestone-panel__target");
+  const value = panel.querySelector(".milestone-panel__value");
   const threshold = getMilestoneThresholdAmount(project);
-  const targetMet = project.pledged >= threshold;
-  const shortfall = threshold > project.pledged ? threshold - project.pledged : 0n;
+  const milestoneProgress =
+    threshold === 0n ? 0 : Number((project.pledged * 10000n) / threshold) / 100;
+  const progressPercent = Math.min(milestoneProgress, 100);
 
-  const parts = [
-    `当前进度 ${project.percent.toFixed(1)}%（${formatEth(project.pledged)} / ${formatEth(project.goal)} ETH）`,
-    targetMet
-      ? `里程碑 ${project.milestonePercent}%（${formatEth(threshold)} ETH）已达成 ✓`
-      : `里程碑 ${project.milestonePercent}%（${formatEth(threshold)} ETH），还差 ${formatEth(shortfall)} ETH`
-  ];
+  if (target) target.textContent = `${project.milestonePercent}%`;
 
-  if (project.milestoneReleased) {
-    parts.push(`已释放 ${MILESTONE_RELEASE_PERCENT}%（${formatEth(project.releasedAmount)} ETH）`);
-  } else if (canReleaseMilestone(project)) {
-    parts.push(`可释放 ${MILESTONE_RELEASE_PERCENT}% 阶段性资金`);
-  } else {
-    parts.push("达成里程碑后，发起人可释放部分资金");
-  }
-
-  return parts.join(" · ");
+  fill.style.width = `${progressPercent}%`;
+  marker.style.left = `${progressPercent}%`;
+  marker.title = `里程碑目标 ${formatEth(threshold)} ETH`;
+  marker.classList.toggle("is-reached", progressPercent >= 100);
+  marker.classList.toggle("is-released", project.milestoneReleased);
+  value.textContent = `${progressPercent.toFixed(1)}%`;
 }
 
 function isWalletConnected() {
@@ -136,13 +137,6 @@ function requireWallet(actionLabel = "进行链上操作") {
 function syncDeadlineEmptyState() {
   if (!els.deadlineInput) return;
   els.deadlineInput.classList.toggle("is-empty", !els.deadlineInput.value);
-}
-
-function getContributorAmount(contributorDetails, address) {
-  const detail = contributorDetails.find(
-    (item) => item.address.toLowerCase() === address.toLowerCase()
-  );
-  return detail?.amount ?? 0n;
 }
 
 function shortAddress(address) {
@@ -374,24 +368,32 @@ async function connectWallet() {
   els.networkDot.classList.add("connected");
 }
 
+function applyProjectLifecycle(project, now = Math.floor(Date.now() / 1000)) {
+  if (project.finalized) {
+    project.status = project.successful ? "成功结束" : "失败结束";
+    project.statusType = project.successful ? "success" : "failed";
+    project.isEnded = true;
+    return;
+  }
+
+  project.isEnded = false;
+  if (project.deadline <= now) {
+    project.status = "可结束";
+    project.statusType = "pending";
+    return;
+  }
+
+  project.status = "进行中";
+  project.statusType = "active";
+}
+
 function parseProject(raw, contributors, contributorDetails, earlyDonors, myContribution = 0n, myEarlyRank = 0) {
-  const now = Math.floor(Date.now() / 1000);
   const deadline = Number(raw.deadline);
   const pledged = raw.pledged;
   const goal = raw.goal;
   const percent = goal === 0n ? 0 : Number((pledged * 10000n) / goal) / 100;
 
-  let status = "进行中";
-  let statusType = "active";
-  if (raw.finalized) {
-    status = raw.successful ? "成功结束" : "失败结束";
-    statusType = raw.successful ? "success" : "failed";
-  } else if (deadline <= now) {
-    status = "可结束";
-    statusType = "pending";
-  }
-
-  return {
+  const project = {
     id: Number(raw.id),
     creator: raw.creator,
     name: raw.name,
@@ -412,10 +414,80 @@ function parseProject(raw, contributors, contributorDetails, earlyDonors, myCont
     myContribution,
     myEarlyRank,
     percent,
-    status,
-    statusType,
-    isEnded: raw.finalized || deadline <= now
+    status: "进行中",
+    statusType: "active",
+    isEnded: raw.finalized,
+    finalizedAt: 0
   };
+
+  applyProjectLifecycle(project);
+  return project;
+}
+
+function isAwaitingFinalize(project, now = Math.floor(Date.now() / 1000)) {
+  return !project.finalized && project.deadline <= now;
+}
+
+function syncProjectLifecycle() {
+  if (!state.projects.length) return false;
+
+  const now = Math.floor(Date.now() / 1000);
+  let changed = false;
+  for (const project of state.projects) {
+    const prevType = project.statusType;
+    applyProjectLifecycle(project, now);
+    if (prevType !== project.statusType) changed = true;
+  }
+  return changed;
+}
+
+function updateVisibleTimeLabels() {
+  for (const card of els.projectList.querySelectorAll(".project-card--compact")) {
+    const project = state.projects.find((item) => item.id === Number(card.dataset.projectId));
+    if (!project) continue;
+    card.querySelector(".project-time").textContent = getTimeLabel(project.deadline, project.finalized);
+  }
+
+  if (state.selectedProjectId === null) return;
+
+  const card = els.projectDetailBody.querySelector(".project-card");
+  const project = state.projects.find((item) => item.id === state.selectedProjectId);
+  if (!card || !project) return;
+
+  card.querySelector(".project-time").textContent = getTimeLabel(project.deadline, project.finalized);
+}
+
+function refreshLifecyclePresentation() {
+  const changed = syncProjectLifecycle();
+  if (changed) {
+    renderSummary(state.projects);
+    renderProjects();
+    return;
+  }
+  updateVisibleTimeLabels();
+}
+
+function scheduleLifecycleRefresh() {
+  clearTimeout(state.lifecycleDeadlineTimer);
+  clearInterval(state.lifecycleInterval);
+
+  const now = Math.floor(Date.now() / 1000);
+  let nextDeadline = Infinity;
+  for (const project of state.projects) {
+    if (!project.finalized && project.deadline > now) {
+      nextDeadline = Math.min(nextDeadline, project.deadline);
+    }
+  }
+
+  if (nextDeadline !== Infinity) {
+    const delay = Math.max(nextDeadline - now, 0) * 1000 + 500;
+    state.lifecycleDeadlineTimer = setTimeout(() => {
+      refreshLifecyclePresentation();
+      scheduleLifecycleRefresh();
+    }, delay);
+  }
+
+  state.lifecycleInterval = setInterval(refreshLifecyclePresentation, LIFECYCLE_TICK_MS);
 }
 
 async function loadProjects() {
@@ -433,37 +505,45 @@ async function loadProjects() {
       const contract = getReadContract();
       const count = Number(await withTimeout(contract.projectCount(), "读取项目数量超时，请确认本地区块链已启动。"));
       const account = state.account;
-      const projects = await withTimeout(
-        Promise.all(
-          Array.from({ length: count }, (_, id) =>
-            Promise.all([
-              contract.getProject(id),
-              contract.getContributors(id),
-              contract.getEarlyDonors(id),
-              account ? contract.getContribution(id, account) : Promise.resolve(0n),
-              account ? contract.getEarlyDonorRank(id, account) : Promise.resolve(0n)
-            ]).then(async ([raw, contributors, earlyDonors, myContribution, myEarlyRank]) => {
-              const contributorDetails = await Promise.all(
-                contributors.map(async (address) => ({
-                  address,
-                  amount: await contract.getContribution(id, address)
-                }))
-              );
-              return parseProject(
-                raw,
-                contributors,
-                contributorDetails,
-                earlyDonors,
-                myContribution,
-                Number(myEarlyRank)
-              );
-            })
-          )
+      const [projects, finalizeTimes] = await Promise.all([
+        withTimeout(
+          Promise.all(
+            Array.from({ length: count }, (_, id) =>
+              Promise.all([
+                contract.getProject(id),
+                contract.getContributors(id),
+                contract.getEarlyDonors(id),
+                account ? contract.getContribution(id, account) : Promise.resolve(0n),
+                account ? contract.getEarlyDonorRank(id, account) : Promise.resolve(0n)
+              ]).then(async ([raw, contributors, earlyDonors, myContribution, myEarlyRank]) => {
+                const contributorDetails = await Promise.all(
+                  contributors.map(async (address) => ({
+                    address,
+                    amount: await contract.getContribution(id, address)
+                  }))
+                );
+                return parseProject(
+                  raw,
+                  contributors,
+                  contributorDetails,
+                  earlyDonors,
+                  myContribution,
+                  Number(myEarlyRank)
+                );
+              })
+            )
+          ),
+          "读取项目详情超时，请稍后重试。"
         ),
-        "读取项目详情超时，请稍后重试。"
-      );
+        loadProjectFinalizeTimes(contract).catch(() => new Map())
+      ]);
+
+      for (const project of projects) {
+        project.finalizedAt = finalizeTimes.get(project.id) ?? 0;
+      }
 
       state.projects = projects;
+      scheduleLifecycleRefresh();
       renderProjects();
       try {
         await syncChainLogs(contract);
@@ -485,12 +565,13 @@ async function loadProjects() {
 }
 
 function renderSummary(projects) {
-  const active = projects.filter((project) => !project.isEnded).length;
-  const ended = projects.length - active;
+  const active = projects.filter((project) => project.statusType === "active").length;
+  const pending = projects.filter((project) => project.statusType === "pending").length;
+  const ended = projects.filter((project) => project.isEnded).length;
   const pledged = projects.reduce((sum, project) => sum + project.pledged, 0n);
 
-  els.summaryProjects.textContent = projects.length.toString();
-  els.summaryActive.textContent = active.toString();
+  els.summaryProjects.textContent = active.toString();
+  els.summaryActive.textContent = pending.toString();
   els.summaryEnded.textContent = ended.toString();
   els.summaryPledged.textContent = formatEth(pledged);
 }
@@ -511,7 +592,8 @@ function getTimeLabel(deadline, finalized) {
 }
 
 function matchesFilter(project) {
-  if (state.filter === "active") return !project.isEnded;
+  if (state.filter === "active") return project.statusType === "active";
+  if (state.filter === "pending") return project.statusType === "pending";
   if (state.filter === "ended") return project.isEnded;
   return true;
 }
@@ -551,7 +633,7 @@ function getProjectActions(project) {
     canReleaseMilestone(project);
   const canWithdraw = isCreator && project.finalized && project.successful && !project.withdrawn;
   const canRefund =
-    !project.successful && project.myContribution > 0n && (project.finalized || ended);
+    !project.successful && project.myContribution > 0n && project.finalized;
 
   let finalizeReason = "";
   if (project.finalized) finalizeReason = "项目已结算";
@@ -578,10 +660,16 @@ function getProjectActions(project) {
   if (!state.account) refundReason = "请先连接钱包";
   else if (project.myContribution === 0n) refundReason = "您尚未捐赠此项目";
   else if (project.successful) refundReason = "项目已成功，无法退款";
-  else if (!project.finalized && !ended) refundReason = "项目仍在进行中";
+  else if (!project.finalized && ended) refundReason = "请先结束项目后再申请退款";
+  else if (!project.finalized) refundReason = "项目仍在进行中";
+
+  let donateReason = "";
+  if (project.finalized) donateReason = "项目已结束";
+  else if (ended) donateReason = "项目已截止，无法继续捐赠";
 
   return {
     canDonate: !project.finalized && project.deadline > now,
+    donateReason,
     finalize: { available: canFinalize, reason: finalizeReason },
     milestone: { available: canMilestone, reason: milestoneReason },
     withdraw: { available: canWithdraw, reason: withdrawReason },
@@ -596,9 +684,39 @@ function applyActionButton(button, action) {
   button.title = action.available ? "" : action.reason;
 }
 
+function applyDonateForm(donateForm, actions) {
+  const submitBtn = donateForm.querySelector("button[type='submit']");
+  const amountInput = donateForm.querySelector("input[name='amount']");
+
+  donateForm.hidden = false;
+  if (actions.canDonate) {
+    submitBtn.disabled = false;
+    amountInput.disabled = false;
+    submitBtn.classList.remove("action-btn--off");
+    submitBtn.title = "";
+    return;
+  }
+
+  submitBtn.disabled = true;
+  amountInput.disabled = true;
+  submitBtn.classList.add("action-btn--off");
+  submitBtn.title = actions.donateReason;
+}
+
+function sortProjectsForFilter(projects) {
+  if (state.filter !== "ended") return projects;
+
+  return [...projects].sort((a, b) => {
+    const aTime = a.finalizedAt || a.deadline;
+    const bTime = b.finalizedAt || b.deadline;
+    return bTime - aTime || b.id - a.id;
+  });
+}
+
 function setStatusBadge(statusEl, project) {
   statusEl.textContent = project.status;
   statusEl.classList.toggle("active", project.statusType === "active");
+  statusEl.classList.toggle("pending", project.statusType === "pending");
   statusEl.classList.toggle("success", project.statusType === "success");
   statusEl.classList.toggle("failed", project.statusType === "failed");
 }
@@ -652,7 +770,7 @@ function populateDetailCard(card, project) {
   card.querySelector(".project-goal").textContent = formatEth(project.goal);
   card.querySelector(".project-percent").textContent = `${Math.min(project.percent, 999).toFixed(1)}%`;
   card.querySelector(".project-time").textContent = getTimeLabel(project.deadline, project.finalized);
-  card.querySelector(".project-creator").textContent = shortAddress(project.creator);
+  card.querySelector(".project-creator").textContent = project.creator;
   card.querySelector(".project-creator").title = project.creator;
   const donorsEl = card.querySelector(".project-donors");
   if (project.contributorDetails.length === 0) {
@@ -684,8 +802,7 @@ function populateDetailCard(card, project) {
         const rank = index + 1;
         const isMe =
           state.account && address.toLowerCase() === state.account.toLowerCase();
-        const amount = getContributorAmount(project.contributorDetails, address);
-        return `<span class="early-badge${isMe ? " early-badge--me" : ""}" title="第 ${rank} 位早鸟支持者 · ${formatEth(amount)} ETH">#${rank} ${shortAddress(address)} · ${formatEth(amount)} ETH</span>`;
+        return `<span class="early-badge${isMe ? " early-badge--me" : ""}" title="第 ${rank} 位早鸟支持者">#${rank} ${shortAddress(address)}</span>`;
       })
       .join("");
   }
@@ -699,34 +816,59 @@ function populateDetailCard(card, project) {
     }
   }
 
-  const milestoneEl = card.querySelector(".project-milestone");
-  if (milestoneEl) {
-    milestoneEl.textContent = formatMilestoneStatus(project);
-  }
+  renderMilestoneProgress(card, project);
 
   setStatusBadge(status, project);
   progress.style.width = `${Math.min(project.percent, 100)}%`;
 
   const actions = getProjectActions(project);
   const donateForm = card.querySelector(".donate-form");
-  donateForm.hidden = !actions.canDonate;
-  card.querySelector(".donate-form button").disabled = !actions.canDonate;
-  applyActionButton(card.querySelector(".finalize-btn"), actions.finalize);
+  const finalizeBtn = card.querySelector(".finalize-btn");
   const milestoneBtn = card.querySelector(".milestone-btn");
-  if (hasMilestone(project)) {
+  const withdrawBtn = card.querySelector(".withdraw-btn");
+  const refundBtn = card.querySelector(".refund-btn");
+  const awaitingFinalize = isAwaitingFinalize(project);
+
+  if (awaitingFinalize) {
+    applyDonateForm(donateForm, actions);
+    milestoneBtn.hidden = true;
+    withdrawBtn.hidden = true;
+    refundBtn.hidden = true;
+    finalizeBtn.hidden = false;
+    applyActionButton(finalizeBtn, actions.finalize);
+    return;
+  }
+
+  applyDonateForm(donateForm, actions);
+
+  finalizeBtn.hidden = project.finalized;
+  if (!project.finalized) {
+    applyActionButton(finalizeBtn, actions.finalize);
+  }
+
+  if (hasMilestone(project) && !project.finalized) {
     milestoneBtn.hidden = false;
     applyActionButton(milestoneBtn, actions.milestone);
   } else {
     milestoneBtn.hidden = true;
   }
-  applyActionButton(card.querySelector(".withdraw-btn"), actions.withdraw);
-  applyActionButton(card.querySelector(".refund-btn"), actions.refund);
+
+  if (project.finalized) {
+    withdrawBtn.hidden = false;
+    refundBtn.hidden = false;
+    applyActionButton(withdrawBtn, actions.withdraw);
+    applyActionButton(refundBtn, actions.refund);
+  } else {
+    withdrawBtn.hidden = true;
+    refundBtn.hidden = true;
+  }
 }
 
 function openProjectDetail(projectId) {
   const project = state.projects.find((item) => item.id === projectId);
   if (!project) return;
 
+  applyProjectLifecycle(project);
   state.selectedProjectId = projectId;
   els.projectDetailBody.innerHTML = "";
   const fragment = els.projectDetailTemplate.content.cloneNode(true);
@@ -764,10 +906,11 @@ function renderProjectDetail() {
 }
 
 function renderProjects() {
+  syncProjectLifecycle();
   renderSummary(state.projects);
   els.projectList.innerHTML = "";
 
-  const projects = state.projects.filter(matchesFilter);
+  const projects = sortProjectsForFilter(state.projects.filter(matchesFilter));
   if (projects.length === 0) {
     if (state.selectedProjectId !== null) {
       closeProjectDetail();
