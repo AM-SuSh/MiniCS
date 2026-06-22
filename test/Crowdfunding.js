@@ -129,6 +129,10 @@ describe("Crowdfunding", function () {
     await crowdfunding.connect(donor).donate(0, { value: ethers.parseEther("1") });
     await time.increaseTo(deadline + 1);
 
+    await expect(crowdfunding.connect(donor).finalizeProject(0))
+      .to.emit(crowdfunding, "ProjectFinalized")
+      .withArgs(0, false, ethers.parseEther("1"));
+
     await expect(crowdfunding.connect(donor).claimRefund(0)).to.changeEtherBalances(
       [crowdfunding, donor],
       [ethers.parseEther("-1"), ethers.parseEther("1")]
@@ -214,6 +218,10 @@ describe("Crowdfunding", function () {
     });
 
     await crowdfunding.connect(donor).donate(0, { value: ethers.parseEther("1") });
+
+    await expect(crowdfunding.connect(donor).claimRefund(0)).to.be.revertedWith(
+      "Project not finalized"
+    );
 
     await expect(crowdfunding.connect(stranger).withdrawFunds(0)).to.be.revertedWith(
       "Only creator"

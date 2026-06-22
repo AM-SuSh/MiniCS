@@ -212,10 +212,7 @@ contract Crowdfunding {
 
     function claimRefund(uint256 projectId) external projectExists(projectId) {
         Project storage project = projects[projectId];
-        if (!project.finalized) {
-            finalizeProject(projectId);
-        }
-
+        require(project.finalized, "Project not finalized");
         require(!project.successful, "Project succeeded");
 
         uint256 contribution = contributions[projectId][msg.sender];
