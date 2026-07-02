@@ -53,10 +53,10 @@ MiniCS/
 ├─ tasks/
 │  └─ chainInfo.js                  ← hardhat task：查看本地链账户与最新区块
 ├─ test/
-│  └─ Crowdfunding.js               ← 合约测试（17 个用例）
+│  └─ Crowdfunding.js               ← 合约测试
 ├─ hardhat.config.js
 ├─ package.json
-└─ MiniCS.md                        ← 详细项目说明文档
+└─ MiniCS.md                        ← 项目报告
 ```
 
 ## 运行
