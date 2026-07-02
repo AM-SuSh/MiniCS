@@ -31,25 +31,32 @@
 ```text
 MiniCS/
 ├─ contracts/
-│  └─ Crowdfunding.sol          ← 核心众筹合约
-├─ test/
-│  └─ Crowdfunding.js           ← 合约测试（10 个用例）
+│  └─ Crowdfunding.sol              ← 核心众筹合约
+├─ docs/
+│  ├─ project-detail-layout.md      ← 详情页布局约定
+│  └─ status-filters.md             ← 状态筛选口径
+├─ ignition/
+│  └─ modules/
+│     └─ Crowdfunding.js            ← Hardhat Ignition 部署模块
 ├─ scripts/
-│  ├─ deploy.js                 ← 部署脚本，自动生成前端配置
-│  └─ serve.js                  ← 前端静态服务器
+│  ├─ deploy.js                     ← 部署脚本，自动生成前端配置
+│  └─ serve.js                      ← 前端静态服务器（含 /rpc 代理）
 ├─ src/
-│  ├─ index.html                ← 前端页面
-│  ├─ css/styles.css            ← 样式
+│  ├─ index.html                    ← 前端页面
+│  ├─ css/styles.css                ← 样式
 │  └─ js/
-│     ├─ dapp.js                ← 前端核心逻辑
-│     ├─ chain-log.js           ← 链上事件日志模块
-│     ├─ contract-config.js     ← 部署后自动生成（.gitignore）
-│     ├─ contract-config.example.js
-│     └─ ethers.min.js          ← ethers.js 本地打包
-├─ docs/                        ← 扩展文档
+│     ├─ dapp.js                    ← 前端核心逻辑
+│     ├─ chain-log.js               ← 链上事件日志模块
+│     ├─ contract-config.js         ← 部署后自动生成（.gitignore）
+│     ├─ contract-config.example.js ← 配置模板
+│     └─ ethers.min.js              ← ethers.js v6 本地打包
+├─ tasks/
+│  └─ chainInfo.js                  ← hardhat task：查看本地链账户与最新区块
+├─ test/
+│  └─ Crowdfunding.js               ← 合约测试（17 个用例）
 ├─ hardhat.config.js
 ├─ package.json
-└─ MiniCS.md                    ← 详细项目说明文档
+└─ MiniCS.md                        ← 详细项目说明文档
 ```
 
 ## 运行
@@ -116,7 +123,7 @@ npm run dev
 | 命令 | 作用 |
 |------|------|
 | `npm run compile` | 编译 Solidity 合约 |
-| `npm test` | 运行合约测试（10 个用例） |
+| `npm test` | 运行合约测试（17 个用例） |
 | `npm run node` | 启动 Hardhat 本地区块链节点 |
 | `npm run deploy:localhost` | 部署合约到本地链并生成前端配置 |
 | `npm run dev` | 启动前端静态服务器（默认 3000 端口） |
